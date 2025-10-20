@@ -4,3 +4,4 @@ transpiled
 worker
 wrangler.toml
 !wrangler.toml.sample
+.githooks/
