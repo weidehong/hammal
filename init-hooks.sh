@@ -66,7 +66,7 @@ cat << 'EOF' > "$CUSTOM_HOOKS/pre-merge-commit"
 # ==========================================
 
 # 定义受保护的分支列表（可自定义）
-PROTECTED_BRANCHES=("main" "master" "production" "release")
+PROTECTED_BRANCHES=("main")
 
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
@@ -107,7 +107,7 @@ chmod +x "$CUSTOM_HOOKS/pre-merge-commit"
 
 echo "🛡️ 已创建分支保护钩子："
 echo "   - $CUSTOM_HOOKS/pre-merge-commit"
-echo "   - 保护分支: main, master, production, release"
+echo "   - 保护分支: main "
 echo ""
 
 # 为所有自定义 hooks 授权
@@ -137,4 +137,3 @@ echo "   • 团队成员需要执行此脚本以启用保护"
 echo ""
 echo "—— Git Hooks 初始化完成 ——  ✅"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
