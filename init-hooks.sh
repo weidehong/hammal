@@ -94,10 +94,40 @@ chmod +x "$CUSTOM_HOOKS/pre-merge-commit"
 cat << 'EOF' > "$CUSTOM_HOOKS/pre-commit"
 #!/bin/bash
 # ==========================================
-# ✅ 允许直接在 main 提交
+# 🛡️ 严格保护 main 分支，阻止任何 merge 到 main
 # ==========================================
 
-# 本钩子仅作占位，不做阻止
+PROTECTED_BRANCHES=("main")
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+
+# 仅检查受保护分支
+for branch in "${PROTECTED_BRANCHES[@]}"; do
+    if [ "$CURRENT_BRANCH" = "$branch" ]; then
+        # 获取当前 HEAD 的提交对象
+        HEAD_COMMIT=$(git rev-parse HEAD)
+        # 获取索引 staged 的合并提交信息（如果存在）
+        STAGED_COMMIT=$(git diff --cached --name-only)
+
+        # 检查是否有 merge/fetch 引入的更新
+        if [ -n "$STAGED_COMMIT" ]; then
+            echo ""
+            echo "=========================================="
+            echo "❌ 禁止任何 merge 或 fast-forward 更新到 $CURRENT_BRANCH 分支！"
+            echo "=========================================="
+            echo ""
+            echo "📋 正确流程："
+            echo "   1. 在功能分支开发并提交"
+            echo "   2. 推送远程仓库"
+            echo "   3. 通过 Pull Request 合并"
+            echo ""
+            echo "💡 临时绕过：git commit --no-verify（不推荐）"
+            echo ""
+            exit 1
+        fi
+    fi
+done
+
+# 如果不触发保护，允许提交
 exit 0
 EOF
 
