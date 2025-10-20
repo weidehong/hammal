@@ -66,19 +66,16 @@ echo "   - $HOOKS_DIR/post-checkout"
 echo "   - $HOOKS_DIR/post-merge"
 echo ""
 
-# 创建 pre-merge-commit 钩子（保护 main 分支 - 针对 merge commit）
+# 创建 pre-merge-commit 钩子（禁止 merge 到 main）
 cat << 'EOF' > "$CUSTOM_HOOKS/pre-merge-commit"
 #!/bin/bash
 # ==========================================
 # 🛡️ 防止直接创建 merge commit 到受保护分支
 # ==========================================
 
-# 定义受保护的分支列表（可自定义）
 PROTECTED_BRANCHES=("main" "master" "production" "release")
-
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
-# 检查当前分支是否在保护列表中
 is_protected=false
 for branch in "${PROTECTED_BRANCHES[@]}"; do
     if [ "$CURRENT_BRANCH" = "$branch" ]; then
@@ -87,7 +84,6 @@ for branch in "${PROTECTED_BRANCHES[@]}"; do
     fi
 done
 
-# 如果是受保护分支且正在执行 merge 操作
 if [ "$is_protected" = true ] && [ -f .git/MERGE_HEAD ]; then
     echo ""
     echo "=========================================="
@@ -113,68 +109,25 @@ EOF
 
 chmod +x "$CUSTOM_HOOKS/pre-merge-commit"
 
-# 创建 pre-commit 钩子（保护 main 分支 - 针对所有提交）
+# ✅ 修改后的 pre-commit 钩子（允许直接在 main 提交）
 cat << 'EOF' > "$CUSTOM_HOOKS/pre-commit"
 #!/bin/bash
 # ==========================================
-# 🛡️ 防止直接在受保护分支上提交
+# ✅ 允许直接在 main 提交
 # ==========================================
 
-# 定义受保护的分支列表（可自定义）
-PROTECTED_BRANCHES=("main")
-
-CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-
-# 检查当前分支是否在保护列表中
-is_protected=false
-for branch in "${PROTECTED_BRANCHES[@]}"; do
-    if [ "$CURRENT_BRANCH" = "$branch" ]; then
-        is_protected=true
-        break
-    fi
-done
-
-# 如果是受保护分支
-if [ "$is_protected" = true ]; then
-    # 检查是否是 merge commit（允许 merge commit，因为可能来自 PR）
-    if [ -f .git/MERGE_HEAD ]; then
-        exit 0
-    fi
-    
-    # 阻止普通提交
-    echo ""
-    echo "=========================================="
-    echo "❌ 禁止直接在 $CURRENT_BRANCH 分支上提交！"
-    echo "=========================================="
-    echo ""
-    echo "🛡️ 受保护分支: ${PROTECTED_BRANCHES[*]}"
-    echo ""
-    echo "📋 正确流程："
-    echo "   1. 创建功能分支: git checkout -b feature/xxx"
-    echo "   2. 在功能分支上开发提交"
-    echo "   3. 推送到远程仓库"
-    echo "   4. 创建 Pull Request 合并到 $CURRENT_BRANCH"
-    echo ""
-    echo "💡 如需临时绕过（不推荐）："
-    echo "   git commit --no-verify"
-    echo ""
-    exit 1
-fi
-
+# 本钩子仅作占位，不做阻止
 exit 0
 EOF
 
 chmod +x "$CUSTOM_HOOKS/pre-commit"
 
-chmod +x "$CUSTOM_HOOKS/pre-merge-commit"
-
 echo "🛡️ 已创建分支保护钩子："
-echo "   - $CUSTOM_HOOKS/pre-commit (阻止直接提交)"
+echo "   - $CUSTOM_HOOKS/pre-commit (允许直接提交)"
 echo "   - $CUSTOM_HOOKS/pre-merge-commit (阻止 merge commit)"
 echo "   - 保护分支: main "
 echo ""
 
-# 为所有自定义 hooks 授权
 chmod +x "$CUSTOM_HOOKS"/* 2>/dev/null || true
 
 # 验证配置
@@ -191,7 +144,7 @@ echo ""
 echo "✨ 初始化完成！已启用以下功能："
 echo "   ✓ 自定义 hooks 目录管理"
 echo "   ✓ 切换分支/合并后自动恢复配置"
-echo "   ✓ 阻止在 main/master 等分支直接提交"
+echo "   ✓ 允许在 main 分支直接提交"
 echo "   ✓ 阻止创建 merge commit 到保护分支"
 echo ""
 echo "📌 注意事项："
