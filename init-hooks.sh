@@ -69,87 +69,21 @@ echo ""
 # 创建 pre-merge-commit 钩子（禁止 merge 到 main）
 cat << 'EOF' > "$CUSTOM_HOOKS/pre-merge-commit"
 #!/bin/bash
-# ==========================================
-# 🛡️ 防止直接 merge 到受保护分支（含 fast-forward）
-# ==========================================
-
+# pre-merge-commit 钩子
 PROTECTED_BRANCHES=("main")
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
-# 检查当前分支是否受保护
-is_protected=false
 for branch in "${PROTECTED_BRANCHES[@]}"; do
     if [ "$CURRENT_BRANCH" = "$branch" ]; then
-        is_protected=true
-        break
+        echo ""
+        echo "=========================================="
+        echo "❌ 禁止任何 merge 到 $CURRENT_BRANCH 分支！"
+        echo "=========================================="
+        echo ""
+        echo "📋 正确流程：通过 Pull Request 合并"
+        exit 1
     fi
 done
-
-# 如果不是受保护分支，直接放行
-if [ "$is_protected" != true ]; then
-    exit 0
-fi
-
-# 检查是否处于合并状态（非 fast-forward）
-if [ -f .git/MERGE_HEAD ]; then
-    echo ""
-    echo "=========================================="
-    echo "❌ 禁止直接 merge 到 $CURRENT_BRANCH 分支！"
-    echo "=========================================="
-    echo ""
-    echo "🛡️ 受保护分支: ${PROTECTED_BRANCHES[*]}"
-    echo ""
-    echo "📋 正确流程："
-    echo "   1. 切换到功能分支开发"
-    echo "   2. 推送到远程仓库"
-    echo "   3. 创建 Pull Request"
-    echo "   4. 代码审查通过后合并"
-    echo ""
-    echo "💡 如需临时绕过（不推荐）："
-    echo "   git merge --no-verify <branch>"
-    echo ""
-    exit 1
-fi
-
-# ===========================
-# 检查是否是 fast-forward 合并
-# ===========================
-# Fast-forward 情况不会生成 MERGE_HEAD，所以我们要额外判断
-MERGE_CMD=""
-
-# macOS / Linux / Git Bash 通用方式
-if command -v ps >/dev/null 2>&1; then
-    # 捕获父进程命令
-    PARENT_CMD=$(ps -ocommand= -p "$PPID" 2>/dev/null || echo "")
-    if echo "$PARENT_CMD" | grep -qE "git merge"; then
-        MERGE_CMD="git merge"
-    fi
-fi
-
-# Windows 兼容：Git Bash 下的 PPID 可能是 sh.exe
-# 所以加一层检查 git 环境变量
-if [ -z "$MERGE_CMD" ] && [ -n "$GIT_PREFIX" ]; then
-    if git rev-parse --verify HEAD >/dev/null 2>&1; then
-        MERGE_CMD="git merge (detected via GIT_PREFIX)"
-    fi
-fi
-
-if [ -n "$MERGE_CMD" ]; then
-    echo ""
-    echo "=========================================="
-    echo "❌ 禁止直接 fast-forward 合并到 $CURRENT_BRANCH 分支！"
-    echo "=========================================="
-    echo ""
-    echo "🛡️ 受保护分支: ${PROTECTED_BRANCHES[*]}"
-    echo ""
-    echo "📋 正确流程："
-    echo "   1. 创建新分支开发并推送远程"
-    echo "   2. 通过 Pull Request 合并"
-    echo ""
-    echo "💡 临时绕过：git merge --no-verify <branch>"
-    echo ""
-    exit 1
-fi
 
 exit 0
 EOF
