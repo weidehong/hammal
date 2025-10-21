@@ -66,11 +66,11 @@ echo "   - $HOOKS_DIR/post-checkout"
 echo "   - $HOOKS_DIR/post-merge"
 echo ""
 
-# 创建 pre-merge-commit 钩子（保护 main 分支 - 针对 merge commit）
-cat << 'EOF' > "$CUSTOM_HOOKS/pre-merge-commit"
+# 创建 pre-commit 钩子（阻止所有 merge 操作）
+cat << 'EOF' > "$CUSTOM_HOOKS/pre-commit"
 #!/bin/bash
 # ==========================================
-# 🛡️ 防止直接创建 merge commit 到受保护分支
+# 🛡️ 防止 merge 到受保护分支
 # ==========================================
 
 # 定义受保护的分支列表（可自定义）
@@ -97,10 +97,9 @@ if [ "$is_protected" = true ] && [ -f .git/MERGE_HEAD ]; then
     echo "🛡️ 受保护分支: ${PROTECTED_BRANCHES[*]}"
     echo ""
     echo "📋 正确流程："
-    echo "   1. 切换到功能分支开发"
-    echo "   2. 推送到远程仓库"
-    echo "   3. 创建 Pull Request"
-    echo "   4. 代码审查通过后合并"
+    echo "   1. 推送功能分支到远程仓库"
+    echo "   2. 创建 Pull Request"
+    echo "   3. 代码审查通过后合并"
     echo ""
     echo "💡 如需临时绕过（不推荐）："
     echo "   git merge --no-verify <branch>"
@@ -111,7 +110,7 @@ fi
 exit 0
 EOF
 
-chmod +x "$CUSTOM_HOOKS/pre-merge-commit"
+chmod +x "$CUSTOM_HOOKS/pre-commit"
 
 # 创建 post-merge 钩子（阻止 fast-forward merge）
 cat << 'EOF' > "$CUSTOM_HOOKS/post-merge"
@@ -180,7 +179,7 @@ chmod +x "$CUSTOM_HOOKS/post-merge"
 chmod +x "$CUSTOM_HOOKS/pre-merge-commit"
 
 echo "🛡️ 已创建分支保护钩子："
-echo "   - $CUSTOM_HOOKS/pre-merge-commit (阻止 merge commit)"
+echo "   - $CUSTOM_HOOKS/pre-commit (阻止 merge commit)"
 echo "   - $CUSTOM_HOOKS/post-merge (阻止 fast-forward merge)"
 echo "   - 保护分支: main, master, production, release"
 echo "   - 允许在保护分支直接提交"
@@ -211,5 +210,5 @@ echo "   • 本地 hooks 可通过 --no-verify 绕过"
 echo "   • 生产环境建议配置服务器端保护规则"
 echo "   • 团队成员需要执行此脚本以启用保护"
 echo ""
-echo "—— Git Hooks 初始化完成 ——✅"
+echo "—— Git Hooks 初始化完成 ✅"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
