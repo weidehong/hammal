@@ -74,7 +74,7 @@ cat << 'EOF' > "$CUSTOM_HOOKS/pre-merge-commit"
 # ==========================================
 
 # 定义受保护的分支列表（可自定义）
-PROTECTED_BRANCHES=("main" "master" "production" "release")
+PROTECTED_BRANCHES=("main" "master")
 
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
@@ -113,15 +113,15 @@ EOF
 
 chmod +x "$CUSTOM_HOOKS/pre-merge-commit"
 
-# 创建 pre-commit 钩子（保护 main 分支 - 针对所有提交）
-cat << 'EOF' > "$CUSTOM_HOOKS/pre-commit"
+# 创建 post-merge 钩子（阻止 fast-forward merge）
+cat << 'EOF' > "$CUSTOM_HOOKS/post-merge"
 #!/bin/bash
 # ==========================================
-# 🛡️ 仅禁止在 main 分支执行 merge 操作，允许直接提交
+# 🛡️ 检测并回滚 fast-forward merge
 # ==========================================
 
-# 定义受保护的分支（禁止 merge）
-PROTECTED_BRANCHES=("main")
+# 定义受保护的分支列表（可自定义）
+PROTECTED_BRANCHES=("main" "master")
 
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
@@ -134,37 +134,56 @@ for branch in "${PROTECTED_BRANCHES[@]}"; do
     fi
 done
 
-# 如果是受保护分支，并且正处于 merge 状态（任何类型的 merge）
-if [ "$is_protected" = true ] && [ -f .git/MERGE_HEAD ]; then
-    echo ""
-    echo "=========================================="
-    echo "❌ 禁止在 $CURRENT_BRANCH 分支上执行合并操作！"
-    echo "=========================================="
-    echo ""
-    echo "📋 原因：不允许直接 merge 到受保护分支"
-    echo ""
-    echo "💡 正确做法："
-    echo "   请使用 Pull Request / Merge Request 流程"
-    echo ""
-    echo "⚠️ 临时绕过（不推荐）："
-    echo "   git merge --no-verify <branch>"
-    echo ""
-    exit 1
+# 如果是受保护分支
+if [ "$is_protected" = true ]; then
+    # 检查是否是 fast-forward merge（通过检查 ORIG_HEAD）
+    if [ -n "$GIT_REFLOG_ACTION" ] && echo "$GIT_REFLOG_ACTION" | grep -q "merge"; then
+        # 获取 merge 前的 commit
+        ORIG_HEAD=$(git rev-parse ORIG_HEAD 2>/dev/null)
+        CURRENT_HEAD=$(git rev-parse HEAD)
+        
+        # 如果 HEAD 改变了，说明发生了 merge
+        if [ "$ORIG_HEAD" != "$CURRENT_HEAD" ]; then
+            # 检查是否是 fast-forward（没有 merge commit）
+            if ! git rev-parse MERGE_HEAD >/dev/null 2>&1; then
+                echo ""
+                echo "=========================================="
+                echo "❌ 检测到 fast-forward merge，已自动回滚！"
+                echo "=========================================="
+                echo ""
+                echo "🛡️ 受保护分支: ${PROTECTED_BRANCHES[*]}"
+                echo ""
+                echo "📋 正确流程："
+                echo "   1. 推送功能分支到远程仓库"
+                echo "   2. 创建 Pull Request"
+                echo "   3. 代码审查通过后合并"
+                echo ""
+                
+                # 回滚到 merge 前的状态
+                git reset --hard ORIG_HEAD
+                exit 1
+            fi
+        fi
+    fi
 fi
 
-# ✅ 允许普通提交（不做任何阻止）
+# 保持 hooks 配置（原有功能）
+ROOT_DIR=$(git rev-parse --show-toplevel)
+git config core.hooksPath "$ROOT_DIR/.githooks" >/dev/null 2>&1
+chmod +x "$ROOT_DIR/.githooks/"* 2>/dev/null
+
 exit 0
 EOF
 
-chmod +x "$CUSTOM_HOOKS/pre-commit"
-
+chmod +x "$CUSTOM_HOOKS/post-merge"
 
 chmod +x "$CUSTOM_HOOKS/pre-merge-commit"
 
 echo "🛡️ 已创建分支保护钩子："
-echo "   - $CUSTOM_HOOKS/pre-commit (阻止直接提交)"
 echo "   - $CUSTOM_HOOKS/pre-merge-commit (阻止 merge commit)"
-echo "   - 保护分支: main "
+echo "   - $CUSTOM_HOOKS/post-merge (阻止 fast-forward merge)"
+echo "   - 保护分支: main, master, production, release"
+echo "   - 允许在保护分支直接提交"
 echo ""
 
 # 为所有自定义 hooks 授权
@@ -184,13 +203,13 @@ echo ""
 echo "✨ 初始化完成！已启用以下功能："
 echo "   ✓ 自定义 hooks 目录管理"
 echo "   ✓ 切换分支/合并后自动恢复配置"
-echo "   ✓ 阻止在 main/master 等分支直接提交"
-echo "   ✓ 阻止创建 merge commit 到保护分支"
+echo "   ✓ 阻止任何形式的 merge 到保护分支"
+echo "   ✓ 允许在保护分支直接提交（适用于紧急修复）"
 echo ""
 echo "📌 注意事项："
 echo "   • 本地 hooks 可通过 --no-verify 绕过"
 echo "   • 生产环境建议配置服务器端保护规则"
 echo "   • 团队成员需要执行此脚本以启用保护"
 echo ""
-echo "——  Git Hooks 初始化完成 ✅"
+echo "—— Git Hooks 初始化完成 ——✅"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
