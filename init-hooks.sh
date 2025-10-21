@@ -176,8 +176,6 @@ EOF
 
 chmod +x "$CUSTOM_HOOKS/post-merge"
 
-chmod +x "$CUSTOM_HOOKS/pre-merge-commit"
-
 echo "🛡️ 已创建分支保护钩子："
 echo "   - $CUSTOM_HOOKS/pre-commit (阻止 merge commit)"
 echo "   - $CUSTOM_HOOKS/post-merge (阻止 fast-forward merge)"
