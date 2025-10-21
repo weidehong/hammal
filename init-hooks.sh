@@ -108,8 +108,7 @@ if [ "$is_protected" = true ] && [ "$COMMIT_SOURCE" = "merge" ]; then
     echo "   git merge --no-verify <branch>"
     echo ""
     
-    # 清理 merge 状态
-    git merge --abort 2>/dev/null || true
+    # 不在这里清理，让用户手动 abort
     exit 1
 fi
 
@@ -147,8 +146,6 @@ if [ "$is_protected" = true ] && [ -f .git/MERGE_HEAD ]; then
     echo "=========================================="
     echo ""
     
-    # 清理 merge 状态
-    git merge --abort 2>/dev/null || true
     exit 1
 fi
 
@@ -165,7 +162,7 @@ cat << 'EOF' > "$CUSTOM_HOOKS/post-merge"
 # ==========================================
 
 # 定义受保护的分支列表（可自定义）
-PROTECTED_BRANCHES=("main" "master" "production" "release")
+PROTECTED_BRANCHES=("main" "master")
 
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
@@ -221,12 +218,11 @@ EOF
 
 chmod +x "$CUSTOM_HOOKS/post-merge"
 
-
 echo "🛡️ 已创建分支保护钩子："
 echo "   - $CUSTOM_HOOKS/prepare-commit-msg (编辑器前阻止)"
 echo "   - $CUSTOM_HOOKS/pre-commit (commit 时阻止)"
 echo "   - $CUSTOM_HOOKS/post-merge (fast-forward 回滚)"
-echo "   - 保护分支: main, master, production, release"
+echo "   - 保护分支: main, master"
 echo "   - 允许在保护分支直接提交"
 echo ""
 
@@ -249,12 +245,12 @@ echo "   ✓ 自定义 hooks 目录管理"
 echo "   ✓ 切换分支/合并后自动恢复配置"
 echo "   ✓ 三重保护阻止任何形式的 merge"
 echo "   ✓ 允许在保护分支直接提交（适用于紧急修复）"
-echo "   ✓ 提交消息格式检查"
 echo ""
 echo "📌 注意事项："
 echo "   • 本地 hooks 可通过 --no-verify 绕过"
 echo "   • 生产环境建议配置服务器端保护规则"
 echo "   • 团队成员需要执行此脚本以启用保护"
+echo "   • 如果 merge 被阻止，使用 'git merge --abort' 清理状态"
 echo ""
 echo "—— Git Hooks 初始化完成 ✅"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
