@@ -279,24 +279,8 @@ show_install_instructions() {
             ;;
     esac
     echo ""
-    echo "   官网: https://cli.github.com/"
+    echo "   官网: https://docs.github.com/zh/github-cli/github-cli/quickstart"
     echo ""
-}
-
-# 跨平台输入
-read_user_input() {
-    local prompt="$1"
-    local default="$2"
-    
-    if [ "$OS_TYPE" = "windows" ]; then
-        echo -n "$prompt"
-        read response
-    else
-        read -p "$prompt" response
-    fi
-    
-    response=${response:-$default}
-    echo "$response"
 }
 
 # ========== 主逻辑 ==========
@@ -316,12 +300,6 @@ main() {
     # 检查 gh CLI
     if ! check_gh_cli; then
         show_install_instructions
-        response=$(read_user_input "❓ 继续 push（不创建 PR）？[y/N]: " "n")
-        if [[ ! "$response" =~ ^[Yy]$ ]]; then
-            echo "❌ 已取消 push"
-            exit 1
-        fi
-        echo "✅ 仅执行 push"
         exit 0
     fi
     
@@ -331,21 +309,6 @@ main() {
         echo "⚠️ GitHub CLI 未登录，请先执行："
         echo "   gh auth login"
         echo ""
-        response=$(read_user_input "❓ 继续 push（不创建 PR）？[y/N]: " "n")
-        if [[ ! "$response" =~ ^[Yy]$ ]]; then
-            echo "❌ 已取消 push"
-            exit 1
-        fi
-        echo "✅ 仅执行 push"
-        exit 0
-    fi
-    
-    # 询问是否创建 PR
-    echo ""
-    response=$(read_user_input "❓ push 后自动创建 PR？[Y/n]: " "y")
-    
-    if [[ "$response" =~ ^[Nn]$ ]]; then
-        echo "✅ 仅执行 push（不创建 PR）"
         exit 0
     fi
     
@@ -354,7 +317,7 @@ main() {
     
     cat > "$POST_PUSH_SCRIPT" <<'INNER_SCRIPT'
 #!/bin/bash
-sleep 10  # 等待 push 完成
+sleep 2  # 等待 push 完成
 
 CURRENT_BRANCH="$1"
 
@@ -419,11 +382,11 @@ echo "✨ 初始化完成！已启用以下功能："
 echo "   ✓ 自定义 hooks 目录管理"
 echo "   ✓ 切换分支/合并后自动恢复配置"
 echo "   ✓ 三重保护阻止 merge 到主分支"
-echo "   ✓ push 时询问并打开浏览器创建 PR"
+echo "   ✓ push 后并打开浏览器创建 PR"
 echo "   ✓ 跨平台支持（macOS/Linux/Windows）"
 echo ""
 echo "📌 注意事项："
-echo "   • PR 功能需要 GitHub CLI: https://cli.github.com/"
+echo "   • PR 功能需要 GitHub CLI: https://github.com/cli/cli?tab=readme-ov-file#installation"
 echo "   • 首次使用需执行: gh auth login"
 echo "   • 本地 hooks 可通过 --no-verify 绕过"
 echo "   • 团队成员需执行此脚本以启用保护"
