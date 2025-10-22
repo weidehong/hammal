@@ -1,9 +1,10 @@
 #!/bin/bash
+# author: wayne
 # ==========================================
 # 🧩 Git Hooks 一键初始化脚本
 # 适用于已存在的 Git 仓库
-# 执行一次即可永久自动启用 .githooks
-# 包含 main 分支合并保护机制
+# 包含 main 分支合并保护 + PR 自动创建
+# 支持 macOS/Linux/Windows
 # ==========================================
 
 set -e
@@ -43,6 +44,10 @@ fi
 echo "⚙️ 设置 Git hooksPath..."
 git config core.hooksPath "$CUSTOM_HOOKS"
 
+# ==========================================
+# 创建 .git/hooks 中的自动恢复钩子
+# ==========================================
+
 # 创建 post-checkout 钩子（自动保持 hooks 生效）
 cat << 'EOF' > "$HOOKS_DIR/post-checkout"
 #!/bin/bash
@@ -66,7 +71,11 @@ echo "   - $HOOKS_DIR/post-checkout"
 echo "   - $HOOKS_DIR/post-merge"
 echo ""
 
-# 创建 prepare-commit-msg 钩子（在编辑器打开前阻止 merge）
+# ==========================================
+# 创建 .githooks 中的自定义钩子
+# ==========================================
+
+# 1. prepare-commit-msg：阻止 merge 到保护分支
 cat << 'EOF' > "$CUSTOM_HOOKS/prepare-commit-msg"
 #!/bin/bash
 # ==========================================
@@ -108,16 +117,13 @@ if [ "$is_protected" = true ] && [ "$COMMIT_SOURCE" = "merge" ]; then
     echo "   git merge --no-verify <branch>"
     echo ""
     
-    # 不在这里清理，让用户手动 abort
     exit 1
 fi
 
 exit 0
 EOF
 
-chmod +x "$CUSTOM_HOOKS/prepare-commit-msg"
-
-# 创建 pre-commit 钩子（双重保险）
+# 2. pre-commit：双重保险阻止 merge
 cat << 'EOF' > "$CUSTOM_HOOKS/pre-commit"
 #!/bin/bash
 # ==========================================
@@ -152,9 +158,7 @@ fi
 exit 0
 EOF
 
-chmod +x "$CUSTOM_HOOKS/pre-commit"
-
-# 创建 post-merge 钩子（阻止 fast-forward merge）
+# 3. post-merge：阻止 fast-forward merge + 保持配置
 cat << 'EOF' > "$CUSTOM_HOOKS/post-merge"
 #!/bin/bash
 # ==========================================
@@ -216,20 +220,191 @@ chmod +x "$ROOT_DIR/.githooks/"* 2>/dev/null
 exit 0
 EOF
 
-chmod +x "$CUSTOM_HOOKS/post-merge"
-
 echo "🛡️ 已创建分支保护钩子："
 echo "   - $CUSTOM_HOOKS/prepare-commit-msg (编辑器前阻止)"
 echo "   - $CUSTOM_HOOKS/pre-commit (commit 时阻止)"
 echo "   - $CUSTOM_HOOKS/post-merge (fast-forward 回滚)"
-echo "   - 保护分支: main, master"
-echo "   - 允许在保护分支直接提交"
+echo ""
+
+# ==========================================
+# 4. pre-push：询问是否创建 PR（新增功能）
+# ==========================================
+
+cat << 'EOF' > "$CUSTOM_HOOKS/pre-push"
+#!/bin/bash
+# ==========================================
+# 🚀 pre-push Hook - 简洁 PR 创建
+# 支持 macOS/Linux/Windows (Git Bash)
+# ==========================================
+
+PROTECTED_BRANCHES=("main" "master" "production")
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+
+# 检测操作系统
+detect_os() {
+    case "$(uname -s)" in
+        Darwin*)    echo "mac" ;;
+        Linux*)     echo "linux" ;;
+        MINGW*|MSYS*|CYGWIN*) echo "windows" ;;
+        *)          echo "unknown" ;;
+    esac
+}
+
+OS_TYPE=$(detect_os)
+
+# 检查 gh CLI
+check_gh_cli() {
+    command -v gh &> /dev/null
+}
+
+# 检查认证
+check_gh_auth() {
+    gh auth status &> /dev/null
+}
+
+# 安装提示
+show_install_instructions() {
+    echo ""
+    echo "📦 GitHub CLI (gh) 未安装"
+    echo ""
+    case "$OS_TYPE" in
+        mac)
+            echo "   macOS: brew install gh"
+            ;;
+        linux)
+            echo "   Linux: sudo apt install gh"
+            ;;
+        windows)
+            echo "   Windows: winget install --id GitHub.cli"
+            ;;
+    esac
+    echo ""
+    echo "   官网: https://cli.github.com/"
+    echo ""
+}
+
+# 跨平台输入
+read_user_input() {
+    local prompt="$1"
+    local default="$2"
+    
+    if [ "$OS_TYPE" = "windows" ]; then
+        echo -n "$prompt"
+        read response
+    else
+        read -p "$prompt" response
+    fi
+    
+    response=${response:-$default}
+    echo "$response"
+}
+
+# ========== 主逻辑 ==========
+main() {
+    # 如果当前在保护分支，直接放行（不询问）
+    for branch in "${PROTECTED_BRANCHES[@]}"; do
+        if [ "$CURRENT_BRANCH" = "$branch" ]; then
+            exit 0
+        fi
+    done
+    
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "🌿 当前分支: $CURRENT_BRANCH"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    
+    # 检查 gh CLI
+    if ! check_gh_cli; then
+        show_install_instructions
+        response=$(read_user_input "❓ 继续 push（不创建 PR）？[y/N]: " "n")
+        if [[ ! "$response" =~ ^[Yy]$ ]]; then
+            echo "❌ 已取消 push"
+            exit 1
+        fi
+        echo "✅ 仅执行 push"
+        exit 0
+    fi
+    
+    # 检查认证
+    if ! check_gh_auth; then
+        echo ""
+        echo "⚠️ GitHub CLI 未登录，请先执行："
+        echo "   gh auth login"
+        echo ""
+        response=$(read_user_input "❓ 继续 push（不创建 PR）？[y/N]: " "n")
+        if [[ ! "$response" =~ ^[Yy]$ ]]; then
+            echo "❌ 已取消 push"
+            exit 1
+        fi
+        echo "✅ 仅执行 push"
+        exit 0
+    fi
+    
+    # 询问是否创建 PR
+    echo ""
+    response=$(read_user_input "❓ push 后自动创建 PR？[Y/n]: " "y")
+    
+    if [[ "$response" =~ ^[Nn]$ ]]; then
+        echo "✅ 仅执行 push（不创建 PR）"
+        exit 0
+    fi
+    
+    # 创建后台脚本（在 push 后执行）
+    POST_PUSH_SCRIPT="/tmp/.git-post-push-$.sh"
+    
+    cat > "$POST_PUSH_SCRIPT" <<'INNER_SCRIPT'
+#!/bin/bash
+sleep 10  # 等待 push 完成
+
+CURRENT_BRANCH="$1"
+
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "🚀 正在打开浏览器创建 PR..."
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "🌿 分支: $CURRENT_BRANCH"
+echo ""
+
+# 直接用 --web 打开浏览器，让用户在网页上填写
+if gh pr create --web 2>/dev/null; then
+    echo "✅ 已在浏览器中打开 PR 创建页面"
+else
+    echo "⚠️ 无法打开 PR 创建页面"
+    echo "💡 手动创建: gh pr create --web"
+fi
+
+rm -f "$0"
+INNER_SCRIPT
+    
+    chmod +x "$POST_PUSH_SCRIPT"
+    
+    # 后台执行
+    nohup bash "$POST_PUSH_SCRIPT" "$CURRENT_BRANCH" > /dev/null 2>&1 &
+    
+    echo "✅ 将在 push 后打开浏览器创建 PR"
+    exit 0
+}
+
+main
+exit 0
+EOF
+
+chmod +x "$CUSTOM_HOOKS/pre-push"
+
+echo "🚀 已创建 PR 自动创建钩子："
+echo "   - $CUSTOM_HOOKS/pre-push"
+echo "   - 支持 macOS/Linux/Windows"
+echo "   - 自动检测并提示安装 gh CLI"
+echo "   - 使用 gh pr create --web 打开浏览器"
 echo ""
 
 # 为所有自定义 hooks 授权
 chmod +x "$CUSTOM_HOOKS"/* 2>/dev/null || true
 
+# ==========================================
 # 验证配置
+# ==========================================
+
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 CURRENT_PATH=$(git config core.hooksPath)
 if [ "$CURRENT_PATH" == "$CUSTOM_HOOKS" ]; then
@@ -243,14 +418,20 @@ echo ""
 echo "✨ 初始化完成！已启用以下功能："
 echo "   ✓ 自定义 hooks 目录管理"
 echo "   ✓ 切换分支/合并后自动恢复配置"
-echo "   ✓ 三重保护阻止任何形式的 merge"
-echo "   ✓ 允许在保护分支直接提交（适用于紧急修复）"
+echo "   ✓ 三重保护阻止 merge 到主分支"
+echo "   ✓ push 时询问并打开浏览器创建 PR"
+echo "   ✓ 跨平台支持（macOS/Linux/Windows）"
 echo ""
 echo "📌 注意事项："
+echo "   • PR 功能需要 GitHub CLI: https://cli.github.com/"
+echo "   • 首次使用需执行: gh auth login"
 echo "   • 本地 hooks 可通过 --no-verify 绕过"
-echo "   • 生产环境建议配置服务器端保护规则"
-echo "   • 团队成员需要执行此脚本以启用保护"
-echo "   • 如果 merge 被阻止，使用 'git merge --abort' 清理状态"
+echo "   • 团队成员需执行此脚本以启用保护"
+echo ""
+echo "🔧 快速安装 GitHub CLI："
+echo "   macOS:   brew install gh"
+echo "   Linux:   sudo apt install gh"
+echo "   Windows: winget install --id GitHub.cli"
 echo ""
 echo "—— Git Hooks 初始化完成 ✅"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
