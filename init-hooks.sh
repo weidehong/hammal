@@ -207,6 +207,24 @@ generate_branch_name() {
     echo "feat/premerge-${user_name}-${timestamp}-${last_merged_branch}"
 }
 
+# 检查是否有merge提交
+has_merge_commits() {
+    local unpushed_commits="$1"
+    if [ "$unpushed_commits" -eq 0 ]; then
+        return 1
+    fi
+    
+    # 检查未推送的提交中是否包含merge提交
+    if git rev-parse @{u} > /dev/null 2>&1; then
+        # 有上游分支，检查@{u}..HEAD范围内的merge提交
+        git rev-list @{u}..HEAD --merges --count 2>/dev/null | grep -q -v "^0$"
+    else
+        # 没有上游分支，检查所有提交中的merge提交
+        git rev-list HEAD --merges --count 2>/dev/null | grep -q -v "^0$"
+    fi
+}
+
+
 # ========== 主逻辑 ==========
 main() {
     # 检查当前是否在受保护分支
@@ -254,9 +272,24 @@ main() {
             echo "📊 检测到 $UNPUSHED_COMMITS 个未推送的提交"
         fi
         
-        echo ""
-        echo "🚫 禁止直接 push 到 $CURRENT_BRANCH 分支"
-        echo "🔄 正在自动转移提交到临时分支..."
+        # 检查是否包含merge提交
+        if has_merge_commits "$UNPUSHED_COMMITS"; then
+            echo "🔀 检测到merge提交，这可能是从其他分支合并的更改"
+            echo "🚫 禁止直接push merge提交到 $CURRENT_BRANCH 分支"
+            echo "🔄 正在自动转移提交到临时分支..."
+        else
+            echo "📝 检测到直接在 $CURRENT_BRANCH 分支上的提交"
+            echo ""
+            echo "🚫 禁止直接推送到 $CURRENT_BRANCH 分支"
+            echo ""
+            echo "💡 如果你确定要直接推送到 $CURRENT_BRANCH 分支，请使用："
+            echo "   git push --no-verify"
+            echo ""
+            echo "⚠️  注意：这将绕过分支保护，请谨慎使用！"
+            echo "📋 推荐做法：创建功能分支后通过PR合并"
+            exit 1
+        fi
+        
         echo ""
         
         # 生成临时分支名
@@ -353,60 +386,16 @@ main() {
         exit 1
     fi
     
-    # 非受保护分支：正常 push，但询问是否创建 PR
+    # 非受保护分支：正常 push
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "🌿 当前分支: $CURRENT_BRANCH"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    
-    # 检查 gh CLI
-    if ! check_gh_cli; then
-        show_install_instructions
-        exit 0
-    fi
-    
-    # 检查认证
-    if ! check_gh_auth; then
-        echo ""
-        echo "⚠️  GitHub CLI 未登录，请先执行："
-        echo "   gh auth login"
-        echo ""
-        exit 0
-    fi
-    
-    # 创建后台脚本（在 push 后执行）
-    POST_PUSH_SCRIPT="/tmp/.git-post-push-$$.sh"
-    
-    cat > "$POST_PUSH_SCRIPT" <<'INNER_SCRIPT'
-#!/bin/bash
-sleep 2  # 等待 push 完成
-
-CURRENT_BRANCH="$1"
-
-echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "🚀 正在打开浏览器创建 PR..."
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "🌿 分支: $CURRENT_BRANCH"
-echo ""
-
-# 直接用 --web 打开浏览器，让用户在网页上填写
-if gh pr create --web 2>/dev/null; then
-    echo "✅ 已在浏览器中打开 PR 创建页面"
-else
-    echo "⚠️  无法打开 PR 创建页面"
-    echo "💡 手动创建: gh pr create --web"
-fi
-
-rm -f "$0"
-INNER_SCRIPT
-    
-    chmod +x "$POST_PUSH_SCRIPT"
-    
-    # 后台执行
-    nohup bash "$POST_PUSH_SCRIPT" "$CURRENT_BRANCH" > /dev/null 2>&1 &
-    
-    echo "✅ 将在 push 后打开浏览器创建 PR"
+    echo "✅ 允许推送到功能分支"
+    echo ""
+    echo "💡 提示：推送完成后，你可以手动创建 PR："
+    echo "   gh pr create --web"
+    echo ""
     exit 0
 }
 
@@ -457,13 +446,15 @@ echo "   ✅ 允许的操作："
 echo "      • git checkout main && git pull"
 echo "      • git checkout main && git merge feature-branch (通过 PR)"
 echo "      • 在 main 分支上 commit（会有警告提示）"
+echo "      • git push --no-verify (强制推送直接修改)"
 echo ""
 echo "   🚫 禁止的操作："
 echo "      • git checkout main && git commit && git push"
-echo "        → 自动转移到临时分支并创建 PR"
+echo "        → 直接修改：提示使用 --no-verify 强制推送"
+echo "        → merge修改：自动转移到临时分支并创建 PR"
 echo ""
-echo "   🔄 自动流程："
-echo "      1. 在 main 上执行 git push"
+echo "   🔄 自动流程（仅限merge提交）："
+echo "      1. 在 main 上执行 git push（包含merge提交）"
 echo "      2. 自动创建 feat/premerge-user-YYYYMMDD_HHMMSS-lastmerged"
 echo "      3. 将本地新提交转移到临时分支"
 echo "      4. 推送临时分支到远程"
