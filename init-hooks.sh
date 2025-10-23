@@ -207,21 +207,36 @@ generate_branch_name() {
     echo "feat/premerge-${user_name}-${timestamp}-${last_merged_branch}"
 }
 
-# 检查是否有merge提交
-has_merge_commits() {
+# 检查是否是merge操作（包括fast-forward merge）
+is_merge_operation() {
     local unpushed_commits="$1"
     if [ "$unpushed_commits" -eq 0 ]; then
         return 1
     fi
     
-    # 检查未推送的提交中是否包含merge提交
+    # 方法1: 检查未推送的提交中是否包含merge提交
+    local has_merge_commit=false
     if git rev-parse @{u} > /dev/null 2>&1; then
         # 有上游分支，检查@{u}..HEAD范围内的merge提交
-        git rev-list @{u}..HEAD --merges --count 2>/dev/null | grep -q -v "^0$"
+        if [ "$(git rev-list @{u}..HEAD --merges --count 2>/dev/null)" != "0" ]; then
+            has_merge_commit=true
+        fi
     else
         # 没有上游分支，检查所有提交中的merge提交
-        git rev-list HEAD --merges --count 2>/dev/null | grep -q -v "^0$"
+        if [ "$(git rev-list HEAD --merges --count 2>/dev/null)" != "0" ]; then
+            has_merge_commit=true
+        fi
     fi
+    
+    # 方法2: 检查是否是fast-forward merge
+    # 通过检查最近的reflog条目来判断是否刚执行了merge操作
+    local recent_merge=false
+    if git reflog -1 --pretty=format:"%gs" 2>/dev/null | grep -q "merge"; then
+        recent_merge=true
+    fi
+    
+    # 如果有merge提交或者最近执行了merge操作，认为是merge操作
+    [ "$has_merge_commit" = true ] || [ "$recent_merge" = true ]
 }
 
 
@@ -272,10 +287,10 @@ main() {
             echo "📊 检测到 $UNPUSHED_COMMITS 个未推送的提交"
         fi
         
-        # 检查是否包含merge提交
-        if has_merge_commits "$UNPUSHED_COMMITS"; then
-            echo "🔀 检测到merge提交，这可能是从其他分支合并的更改"
-            echo "🚫 禁止直接push merge提交到 $CURRENT_BRANCH 分支"
+        # 检查是否是merge操作（包括fast-forward merge）
+        if is_merge_operation "$UNPUSHED_COMMITS"; then
+            echo "🔀 检测到merge操作，这可能是从其他分支合并的更改"
+            echo "🚫 禁止直接push merge结果到 $CURRENT_BRANCH 分支"
             echo "🔄 正在自动转移提交到临时分支..."
         else
             echo "📝 检测到直接在 $CURRENT_BRANCH 分支上的提交"
