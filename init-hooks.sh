@@ -178,31 +178,22 @@ generate_branch_name() {
         user_name=$(whoami | cut -c1-8)
     fi
     
-    # 获取最后一次 merge 的分支名
-    local last_merged_branch=""
-    
-    # 方法1: 从 reflog 中查找最近的 merge 操作
-    last_merged_branch=$(git reflog | grep "merge.*:" | head -1 | \
-        sed -n "s/.*merge \([^:]*\):.*/\1/p" | \
+    # 获取当前main分支下合并进来的所有分支（排除premerge分支和main/master分支）
+    local merged_branches=""
+    merged_branches=$(git branch --merged | grep -iv "premerge" | grep -iv "main\|master" | \
+        sed 's/^[* ]*//' | \
+        tr '\n' '-' | \
+        sed 's/-$//' | \
         tr '/' '-' | \
-        cut -c1-15)
+        cut -c1-30)
     
-    # 方法2: 如果方法1失败，尝试从 git log 中查找 merge commit
-    if [ -z "$last_merged_branch" ]; then
-        last_merged_branch=$(git log --merges --oneline -1 --pretty=format:"%s" 2>/dev/null | \
-            sed -n "s/.*Merge branch '\([^']*\)'.*/\1/p" | \
-            head -1 | \
-            tr '/' '-' | \
-            cut -c1-15)
-    fi
-    
-    # 如果还是获取不到，直接使用简单格式
-    if [ -z "$last_merged_branch" ]; then
+    # 如果没有找到合并的分支，使用简单格式
+    if [ -z "$merged_branches" ]; then
         echo "feat/premerge-${user_name}-${timestamp}"
     else
         # 清理分支名，确保符合 Git 分支命名规范
-        last_merged_branch=$(echo "$last_merged_branch" | sed 's/[^a-zA-Z0-9_-]//g')
-        echo "feat/premerge-${user_name}-${timestamp}-${last_merged_branch}"
+        merged_branches=$(echo "$merged_branches" | sed 's/[^a-zA-Z0-9_-]//g')
+        echo "feat/premerge-${merged_branches}-${user_name}-${timestamp}"
     fi
 }
 
