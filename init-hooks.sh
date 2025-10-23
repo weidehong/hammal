@@ -181,30 +181,29 @@ generate_branch_name() {
     # 获取最后一次 merge 的分支名
     local last_merged_branch=""
     
-    # 方法1: 从 git log 中查找最近的 merge commit 信息
-    last_merged_branch=$(git log --merges --oneline -1 --pretty=format:"%s" 2>/dev/null | \
-        sed -n "s/.*Merge branch '\([^']*\)'.*/\1/p" | \
-        head -1 | \
+    # 方法1: 从 reflog 中查找最近的 merge 操作
+    last_merged_branch=$(git reflog | grep "merge.*:" | head -1 | \
+        sed -n "s/.*merge \([^:]*\):.*/\1/p" | \
         tr '/' '-' | \
         cut -c1-15)
     
-    # 方法2: 如果方法1失败，尝试从 reflog 获取
+    # 方法2: 如果方法1失败，尝试从 git log 中查找 merge commit
     if [ -z "$last_merged_branch" ]; then
-        last_merged_branch=$(git reflog --grep="merge" -1 --pretty=format:"%gs" 2>/dev/null | \
-            sed -n "s/.*merge \([^:]*\):.*/\1/p" | \
+        last_merged_branch=$(git log --merges --oneline -1 --pretty=format:"%s" 2>/dev/null | \
+            sed -n "s/.*Merge branch '\([^']*\)'.*/\1/p" | \
+            head -1 | \
             tr '/' '-' | \
             cut -c1-15)
     fi
     
-    # 方法3: 如果还是获取不到，使用随机后缀作为后备
+    # 如果还是获取不到，直接使用简单格式
     if [ -z "$last_merged_branch" ]; then
-        last_merged_branch=$(openssl rand -hex 3 2>/dev/null || printf "%06d" $((RANDOM % 1000000)))
+        echo "feat/premerge-${user_name}-${timestamp}"
+    else
+        # 清理分支名，确保符合 Git 分支命名规范
+        last_merged_branch=$(echo "$last_merged_branch" | sed 's/[^a-zA-Z0-9_-]//g')
+        echo "feat/premerge-${user_name}-${timestamp}-${last_merged_branch}"
     fi
-    
-    # 清理分支名，确保符合 Git 分支命名规范
-    last_merged_branch=$(echo "$last_merged_branch" | sed 's/[^a-zA-Z0-9_-]//g')
-    
-    echo "feat/premerge-${user_name}-${timestamp}-${last_merged_branch}"
 }
 
 # 检查是否是merge操作（包括fast-forward merge）
