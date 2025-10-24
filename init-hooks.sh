@@ -111,6 +111,98 @@ echo "💡 已创建 pre-commit 钩子（仅警告，不阻止）"
 echo ""
 
 # ==========================================
+# 1.5. pre-merge-commit：阻止从dev分支的merge
+# ==========================================
+
+cat << 'EOF' > "$CUSTOM_HOOKS/pre-merge-commit"
+#!/bin/bash
+# ==========================================
+# 🚫 pre-merge-commit Hook - 禁止从dev分支merge
+# 在merge提交创建前检测并阻止从dev分支的merge操作
+# ==========================================
+
+# 检查是否正在进行merge操作
+if [ ! -f ".git/MERGE_HEAD" ]; then
+    # 不是merge操作，允许通过
+    exit 0
+fi
+
+# 获取正在merge的分支信息
+MERGE_HEAD=$(cat .git/MERGE_HEAD 2>/dev/null)
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+
+# 尝试获取merge的源分支名
+MERGE_BRANCH=""
+
+# 方法1: 从MERGE_MSG获取分支名
+if [ -f ".git/MERGE_MSG" ]; then
+    MERGE_MSG=$(cat .git/MERGE_MSG 2>/dev/null)
+    # 提取分支名，支持多种格式
+    if echo "$MERGE_MSG" | grep -q "Merge branch"; then
+        MERGE_BRANCH=$(echo "$MERGE_MSG" | sed -n "s/.*Merge branch '\([^']*\)'.*/\1/p" | head -1)
+    elif echo "$MERGE_MSG" | grep -q "Merge remote-tracking branch"; then
+        MERGE_BRANCH=$(echo "$MERGE_MSG" | sed -n "s/.*Merge remote-tracking branch '\([^']*\)'.*/\1/p" | head -1)
+    fi
+fi
+
+# 方法2: 从reflog获取分支名
+if [ -z "$MERGE_BRANCH" ]; then
+    MERGE_BRANCH=$(git reflog -1 --pretty=format:"%gs" 2>/dev/null | sed -n "s/.*merge \([^:]*\).*/\1/p")
+fi
+
+# 方法3: 检查MERGE_HEAD对应的分支
+if [ -z "$MERGE_BRANCH" ] && [ -n "$MERGE_HEAD" ]; then
+    # 尝试找到包含这个commit的远程分支
+    POSSIBLE_BRANCHES=$(git branch -r --contains "$MERGE_HEAD" 2>/dev/null | grep -v HEAD | sed 's/^[[:space:]]*//' | sed 's/origin\///')
+    for branch in $POSSIBLE_BRANCHES; do
+        if echo "$branch" | grep -q "dev"; then
+            MERGE_BRANCH="$branch"
+            break
+        fi
+    done
+fi
+
+# 检查是否是从dev分支的merge
+if [ -n "$MERGE_BRANCH" ] && echo "$MERGE_BRANCH" | grep -q "dev"; then
+    echo ""
+    echo "🚫 错误：禁止从 dev 分支进行 merge 操作！"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "⚠️  检测到正在从 '$MERGE_BRANCH' 分支 merge 到 '$CURRENT_BRANCH'"
+    echo "⚠️  dev 分支是开发分支，禁止将其代码 merge 到其他分支"
+    echo ""
+    echo "💡 正确的工作流程："
+    echo "   1. 取消当前merge: git merge --abort"
+    echo "   2. 从目标分支创建功能分支: git checkout -b feature/xxx"
+    echo "   3. 在功能分支上开发并提交"
+    echo "   4. 推送功能分支: git push origin feature/xxx"
+    echo "   5. 创建 PR: feature/xxx → $CURRENT_BRANCH"
+    echo ""
+    echo "🔄 立即取消merge："
+    echo "   git merge --abort"
+    echo ""
+    echo "❌ 阻止创建 merge 提交"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    exit 1
+fi
+
+# 如果无法确定merge源分支，给出警告但允许通过
+if [ -z "$MERGE_BRANCH" ]; then
+    echo ""
+    echo "⚠️  警告：无法确定 merge 源分支"
+    echo "💡 如果你正在从 dev 分支 merge，请手动取消："
+    echo "   git merge --abort"
+    echo ""
+fi
+
+exit 0
+EOF
+
+chmod +x "$CUSTOM_HOOKS/pre-merge-commit"
+
+echo "🚫 已创建 pre-merge-commit 钩子（阻止从dev分支merge）"
+echo ""
+
+# ==========================================
 # 2. pre-push：禁止 main 分支 push + 自动转移到临时分支
 # ==========================================
 
@@ -229,6 +321,38 @@ is_merge_operation() {
     [ "$has_merge_commit" = true ] || [ "$recent_merge" = true ]
 }
 
+# 检查是否是从dev分支的merge操作
+is_merge_from_dev() {
+    # 检查最近的merge提交信息
+    local recent_merge_msg=""
+    if git reflog -1 --pretty=format:"%gs" 2>/dev/null | grep -q "merge"; then
+        recent_merge_msg=$(git reflog -1 --pretty=format:"%gs" 2>/dev/null)
+        # 检查merge信息中是否包含dev分支
+        if echo "$recent_merge_msg" | grep -q "merge.*dev\|merge.*origin/dev"; then
+            return 0
+        fi
+    fi
+    
+    # 检查未推送的merge提交中是否来自dev分支
+    local merge_commits=""
+    if git rev-parse @{u} > /dev/null 2>&1; then
+        merge_commits=$(git rev-list @{u}..HEAD --merges 2>/dev/null)
+    else
+        merge_commits=$(git rev-list HEAD --merges 2>/dev/null)
+    fi
+    
+    if [ -n "$merge_commits" ]; then
+        for commit in $merge_commits; do
+            local commit_msg=$(git log -1 --pretty=format:"%s" "$commit" 2>/dev/null)
+            if echo "$commit_msg" | grep -q "dev\|origin/dev"; then
+                return 0
+            fi
+        done
+    fi
+    
+    return 1
+}
+
 
 # ========== 主逻辑 ==========
 main() {
@@ -280,6 +404,28 @@ main() {
         # 检查是否是merge操作（包括fast-forward merge）
         if is_merge_operation "$UNPUSHED_COMMITS"; then
             echo "🔀 检测到merge操作，这可能是从其他分支合并的更改"
+            
+            # 检查是否是从dev分支的merge
+            if is_merge_from_dev; then
+                echo ""
+                echo "🚫 错误：检测到从 dev 分支的 merge 操作！"
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo "⚠️  dev 分支是开发分支，禁止将其代码 merge 到其他分支"
+                echo ""
+                echo "💡 正确的工作流程："
+                echo "   1. 从 $CURRENT_BRANCH 创建功能分支: git checkout -b feature/xxx"
+                echo "   2. 在功能分支上开发并提交"
+                echo "   3. 推送功能分支: git push origin feature/xxx"
+                echo "   4. 创建 PR: feature/xxx → $CURRENT_BRANCH"
+                echo ""
+                echo "🔄 如需撤销此次 merge："
+                echo "   git reset --hard HEAD~1"
+                echo ""
+                echo "❌ 拒绝推送包含 dev 分支代码的 merge"
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                exit 1
+            fi
+            
             echo "🚫 禁止直接push merge结果到 $CURRENT_BRANCH 分支"
             echo "🔄 正在自动转移提交到临时分支..."
         else
@@ -391,11 +537,41 @@ main() {
         exit 1
     fi
     
-    # 非受保护分支：正常 push
+    # 非受保护分支：检查是否包含dev分支的merge
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "🌿 当前分支: $CURRENT_BRANCH"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    
+    # 检查是否有未推送的提交
+    local unpushed_commits=0
+    if git rev-parse @{u} > /dev/null 2>&1; then
+        unpushed_commits=$(git rev-list @{u}..HEAD --count 2>/dev/null || echo "0")
+    else
+        unpushed_commits=$(git rev-list --count HEAD 2>/dev/null || echo "0")
+    fi
+    
+    # 如果有未推送的提交，检查是否包含dev分支的merge
+    if [ "$unpushed_commits" -gt 0 ] && is_merge_operation "$unpushed_commits" && is_merge_from_dev; then
+        echo ""
+        echo "🚫 错误：检测到从 dev 分支的 merge 操作！"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "⚠️  dev 分支是开发分支，禁止将其代码 merge 到任何其他分支"
+        echo ""
+        echo "💡 正确的工作流程："
+        echo "   1. 从目标分支（如 main）创建功能分支: git checkout main && git checkout -b feature/xxx"
+        echo "   2. 在功能分支上开发并提交"
+        echo "   3. 推送功能分支: git push origin feature/xxx"
+        echo "   4. 创建 PR: feature/xxx → main"
+        echo ""
+        echo "🔄 如需撤销此次 merge："
+        echo "   git reset --hard HEAD~1"
+        echo ""
+        echo "❌ 拒绝推送包含 dev 分支代码的 merge"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        exit 1
+    fi
+    
     echo "✅ 允许推送到功能分支"
     echo ""
     echo "💡 提示：推送完成后，你可以手动创建 PR："
@@ -440,6 +616,7 @@ echo "   ✓ 自定义 hooks 目录管理"
 echo "   ✓ 切换分支/合并后自动恢复配置"
 echo "   ✓ ✅ 允许 merge 到 main 分支（PR 合并）"
 echo "   ✓ 🚫 禁止在 main 分支直接 push"
+echo "   ✓ 🚫 禁止从 dev 分支 merge 到任何其他分支"
 echo "   ✓ 🆕 自动创建临时分支 feat/premerge-user-timestamp-lastmerged"
 echo "   ✓ 🆕 自动推送并打开 PR 页面"
 echo "   ✓ 🆕 main 分支保持不变"
@@ -452,11 +629,16 @@ echo "      • git checkout main && git pull"
 echo "      • git checkout main && git merge feature-branch (通过 PR)"
 echo "      • 在 main 分支上 commit（会有警告提示）"
 echo "      • git push --no-verify (强制推送直接修改)"
+echo "      • 在 dev 分支上正常开发和推送"
 echo ""
 echo "   🚫 禁止的操作："
 echo "      • git checkout main && git commit && git push"
 echo "        → 直接修改：提示使用 --no-verify 强制推送"
 echo "        → merge修改：自动转移到临时分支并创建 PR"
+echo "      • git checkout main && git merge dev"
+echo "        → 禁止从 dev 分支 merge 到任何其他分支"
+echo "      • git checkout feature-branch && git merge dev"
+echo "        → 禁止从 dev 分支 merge 到任何其他分支"
 echo ""
 echo "   🔄 自动流程（仅限merge提交）："
 echo "      1. 在 main 上执行 git push（包含merge提交）"
@@ -470,6 +652,8 @@ echo "💡 注意事项："
 echo "   • PR 功能需要 GitHub CLI: https://github.com/cli/cli"
 echo "   • 首次使用需执行: gh auth login"
 echo "   • 如需绕过（不推荐）: git push --no-verify"
+echo "   • dev 分支仅用于开发，禁止 merge 到其他分支"
+echo "   • 从 dev 分支创建功能分支时，应从目标分支（如 main）创建"
 echo ""
 echo "🔧 快速安装 GitHub CLI："
 echo "   macOS:   brew install gh"
