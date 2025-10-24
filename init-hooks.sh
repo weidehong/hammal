@@ -227,6 +227,41 @@ detect_os() {
     esac
 }
 
+# 检查并修复 Windows Git 凭据管理器问题
+check_windows_git_credentials() {
+    if [ "$OS_TYPE" = "windows" ]; then
+        # 检查是否配置了已弃用的 credential-manager-core
+        local credential_helper=$(git config --global credential.helper 2>/dev/null)
+        if [ "$credential_helper" = "manager-core" ]; then
+            echo ""
+            echo "⚠️  检测到 Windows Git 凭据管理器配置问题"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "🔧 正在修复 credential-manager-core 配置..."
+            
+            # 尝试修复配置
+            if git config --global credential.helper manager 2>/dev/null; then
+                echo "✅ 已将 credential.helper 从 'manager-core' 更新为 'manager'"
+            else
+                echo "⚠️  无法自动修复，请手动执行以下命令："
+                echo "   git config --global credential.helper manager"
+            fi
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo ""
+        fi
+        
+        # 检查 Git Credential Manager 是否可用
+        if ! command -v git-credential-manager >/dev/null 2>&1; then
+            echo ""
+            echo "💡 Windows Git 凭据管理器提示："
+            echo "   如果遇到 'credential-manager-core' 错误，请："
+            echo "   1. 更新到最新版本的 Git for Windows"
+            echo "   2. 或执行: git config --global credential.helper manager"
+            echo "   3. 或安装最新的 Git Credential Manager"
+            echo ""
+        fi
+    fi
+}
+
 OS_TYPE=$(detect_os)
 
 # 检查 gh CLI
@@ -289,7 +324,7 @@ generate_branch_name() {
     fi
 }
 
-# 检查是否是merge操作（包括fast-forward merge）
+# 检查是否是merge操作（包括fast-forward merge和squash merge）
 is_merge_operation() {
     local unpushed_commits="$1"
     if [ "$unpushed_commits" -eq 0 ]; then
@@ -310,30 +345,81 @@ is_merge_operation() {
         fi
     fi
     
-    # 方法2: 检查是否是fast-forward merge
+    # 方法2: 检查是否是fast-forward merge或squash merge
     # 通过检查最近的reflog条目来判断是否刚执行了merge操作
     local recent_merge=false
-    if git reflog -1 --pretty=format:"%gs" 2>/dev/null | grep -q "merge"; then
-        recent_merge=true
-    fi
+    local merge_reflog_count=0
     
-    # 如果有merge提交或者最近执行了merge操作，认为是merge操作
-    [ "$has_merge_commit" = true ] || [ "$recent_merge" = true ]
-}
-
-# 检查是否是从dev分支的merge操作
-is_merge_from_dev() {
-    # 检查最近的merge提交信息
-    local recent_merge_msg=""
-    if git reflog -1 --pretty=format:"%gs" 2>/dev/null | grep -q "merge"; then
-        recent_merge_msg=$(git reflog -1 --pretty=format:"%gs" 2>/dev/null)
-        # 检查merge信息中是否包含dev分支
-        if echo "$recent_merge_msg" | grep -q "merge.*dev\|merge.*origin/dev"; then
-            return 0
+    # 检查最近几个reflog条目中是否有merge操作
+    for i in 1 2 3; do
+        local reflog_msg=$(git reflog -$i --pretty=format:"%gs" 2>/dev/null | tail -1)
+        if echo "$reflog_msg" | grep -q "merge"; then
+            recent_merge=true
+            merge_reflog_count=$((merge_reflog_count + 1))
+            break
+        fi
+    done
+    
+    # 方法3: 检查squash merge的特征
+    # squash merge会在reflog中留下merge记录，但不会创建merge commit
+    local is_squash_merge=false
+    if [ "$recent_merge" = true ] && [ "$has_merge_commit" = false ]; then
+        # 如果有merge reflog但没有merge commit，很可能是squash merge
+        # 进一步检查：squash merge通常会有大量文件变更
+        local changed_files=0
+        if git rev-parse @{u} > /dev/null 2>&1; then
+            changed_files=$(git diff --name-only @{u}..HEAD 2>/dev/null | wc -l)
+        else
+            changed_files=$(git diff --name-only HEAD~1..HEAD 2>/dev/null | wc -l)
+        fi
+        
+        # 如果文件变更数量较多（>3个文件），且最近有merge操作，判断为squash merge
+        if [ "$changed_files" -gt 3 ]; then
+            is_squash_merge=true
         fi
     fi
     
-    # 检查未推送的merge提交中是否来自dev分支
+    # 方法4: 检查commit message是否包含merge相关信息
+    local has_merge_message=false
+    if git rev-parse @{u} > /dev/null 2>&1; then
+        # 检查未推送的提交中是否有merge相关的commit message
+        local commit_messages=$(git log @{u}..HEAD --pretty=format:"%s" 2>/dev/null)
+        if echo "$commit_messages" | grep -qi "merge\|squash"; then
+            has_merge_message=true
+        fi
+    else
+        # 检查最新的commit message
+        local latest_commit_msg=$(git log -1 --pretty=format:"%s" 2>/dev/null)
+        if echo "$latest_commit_msg" | grep -qi "merge\|squash"; then
+            has_merge_message=true
+        fi
+    fi
+    
+    # 如果满足以下任一条件，认为是merge操作：
+    # 1. 有merge提交
+    # 2. 最近执行了merge操作
+    # 3. 检测到squash merge特征
+    # 4. commit message包含merge相关信息
+    [ "$has_merge_commit" = true ] || [ "$recent_merge" = true ] || [ "$is_squash_merge" = true ] || [ "$has_merge_message" = true ]
+}
+
+# 检查是否是从dev分支的merge操作（包括squash merge）
+is_merge_from_dev() {
+    # 方法1: 检查最近的merge reflog信息
+    local recent_merge_msg=""
+    for i in 1 2 3; do
+        local reflog_msg=$(git reflog -$i --pretty=format:"%gs" 2>/dev/null | tail -1)
+        if echo "$reflog_msg" | grep -q "merge"; then
+            recent_merge_msg="$reflog_msg"
+            # 检查merge信息中是否包含dev分支
+            if echo "$recent_merge_msg" | grep -q "merge.*dev\|merge.*origin/dev"; then
+                return 0
+            fi
+            break
+        fi
+    done
+    
+    # 方法2: 检查未推送的merge提交中是否来自dev分支
     local merge_commits=""
     if git rev-parse @{u} > /dev/null 2>&1; then
         merge_commits=$(git rev-list @{u}..HEAD --merges 2>/dev/null)
@@ -350,12 +436,67 @@ is_merge_from_dev() {
         done
     fi
     
+    # 方法3: 检查squash merge的情况
+    # 对于squash merge，检查最近的commit message是否包含dev相关信息
+    local recent_commits=""
+    if git rev-parse @{u} > /dev/null 2>&1; then
+        recent_commits=$(git log @{u}..HEAD --pretty=format:"%s" 2>/dev/null)
+    else
+        recent_commits=$(git log -3 --pretty=format:"%s" 2>/dev/null)
+    fi
+    
+    if [ -n "$recent_commits" ]; then
+        if echo "$recent_commits" | grep -qi "dev\|origin/dev\|from.*dev\|merge.*dev"; then
+            return 0
+        fi
+    fi
+    
+    # 方法4: 检查是否有大量文件变更且最近有merge操作（可能是squash merge from dev）
+    if [ -n "$recent_merge_msg" ]; then
+        local changed_files=0
+        if git rev-parse @{u} > /dev/null 2>&1; then
+            changed_files=$(git diff --name-only @{u}..HEAD 2>/dev/null | wc -l)
+        else
+            changed_files=$(git diff --name-only HEAD~1..HEAD 2>/dev/null | wc -l)
+        fi
+        
+        # 如果文件变更很多（>5个），且最近有merge操作，进一步检查
+        if [ "$changed_files" -gt 5 ]; then
+            # 检查变更的文件路径是否符合dev分支的特征
+            local changed_file_list=""
+            if git rev-parse @{u} > /dev/null 2>&1; then
+                changed_file_list=$(git diff --name-only @{u}..HEAD 2>/dev/null)
+            else
+                changed_file_list=$(git diff --name-only HEAD~1..HEAD 2>/dev/null)
+            fi
+            
+            # 如果变更涉及多个目录或核心文件，可能是从dev分支squash merge
+            local dir_count=$(echo "$changed_file_list" | sed 's|/[^/]*$||' | sort -u | wc -l)
+            if [ "$dir_count" -gt 2 ]; then
+                # 进一步检查git log中是否有dev相关的提交
+                local all_commit_msgs=""
+                if git rev-parse @{u} > /dev/null 2>&1; then
+                    all_commit_msgs=$(git log @{u}..HEAD --oneline 2>/dev/null)
+                else
+                    all_commit_msgs=$(git log -5 --oneline 2>/dev/null)
+                fi
+                
+                if echo "$all_commit_msgs" | grep -qi "dev"; then
+                    return 0
+                fi
+            fi
+        fi
+    fi
+    
     return 1
 }
 
 
 # ========== 主逻辑 ==========
 main() {
+    # Windows 系统检查并修复凭据管理器问题
+    check_windows_git_credentials
+    
     # 检查当前是否在受保护分支
     is_protected=false
     protected_branch=""
@@ -401,9 +542,9 @@ main() {
             echo "📊 检测到 $UNPUSHED_COMMITS 个未推送的提交"
         fi
         
-        # 检查是否是merge操作（包括fast-forward merge）
+        # 检查是否是merge操作（包括fast-forward merge和squash merge）
         if is_merge_operation "$UNPUSHED_COMMITS"; then
-            echo "🔀 检测到merge操作，这可能是从其他分支合并的更改"
+            echo "🔀 检测到merge操作，这可能是从其他分支合并的更改（包括 squash merge）"
             
             # 检查是否是从dev分支的merge
             if is_merge_from_dev; then
@@ -614,9 +755,9 @@ echo ""
 echo "✨ 初始化完成！已启用以下功能："
 echo "   ✓ 自定义 hooks 目录管理"
 echo "   ✓ 切换分支/合并后自动恢复配置"
-echo "   ✓ ✅ 允许 merge 到 main 分支（PR 合并）"
+echo "   ✓ ✅ 允许 merge 到 main 分支（PR 合并，包括 squash merge）"
 echo "   ✓ 🚫 禁止在 main 分支直接 push"
-echo "   ✓ 🚫 禁止从 dev 分支 merge 到任何其他分支"
+echo "   ✓ 🚫 禁止从 dev 分支 merge 到任何其他分支（包括 squash merge）"
 echo "   ✓ 🆕 自动创建临时分支 feat/premerge-user-timestamp-lastmerged"
 echo "   ✓ 🆕 自动推送并打开 PR 页面"
 echo "   ✓ 🆕 main 分支保持不变"
@@ -637,11 +778,13 @@ echo "        → 直接修改：提示使用 --no-verify 强制推送"
 echo "        → merge修改：自动转移到临时分支并创建 PR"
 echo "      • git checkout main && git merge dev"
 echo "        → 禁止从 dev 分支 merge 到任何其他分支"
+echo "      • git checkout main && git merge --squash dev"
+echo "        → 禁止从 dev 分支 squash merge 到任何其他分支"
 echo "      • git checkout feature-branch && git merge dev"
 echo "        → 禁止从 dev 分支 merge 到任何其他分支"
 echo ""
-echo "   🔄 自动流程（仅限merge提交）："
-echo "      1. 在 main 上执行 git push（包含merge提交）"
+echo "   🔄 自动流程（仅限merge提交，包括squash merge）："
+echo "      1. 在 main 上执行 git push（包含merge提交或squash merge提交）"
 echo "      2. 自动创建 feat/premerge-user-YYYYMMDD_HHMMSS-lastmerged"
 echo "      3. 将本地新提交转移到临时分支"
 echo "      4. 推送临时分支到远程"
@@ -654,6 +797,11 @@ echo "   • 首次使用需执行: gh auth login"
 echo "   • 如需绕过（不推荐）: git push --no-verify"
 echo "   • dev 分支仅用于开发，禁止 merge 到其他分支"
 echo "   • 从 dev 分支创建功能分支时，应从目标分支（如 main）创建"
+echo ""
+echo "🪟 Windows 用户特别提示："
+echo "   • 如遇到 'credential-manager-core' 错误，脚本会自动修复"
+echo "   • 或手动执行: git config --global credential.helper manager"
+echo "   • 建议使用最新版本的 Git for Windows"
 echo ""
 echo "🔧 快速安装 GitHub CLI："
 echo "   macOS:   brew install gh"
