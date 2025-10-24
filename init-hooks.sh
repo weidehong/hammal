@@ -295,7 +295,7 @@ show_install_instructions() {
     echo ""
 }
 
-# 生成预合并分支名
+# 生成预合并分支名（支持squash merge分支信息获取）
 generate_branch_name() {
     local timestamp=$(date +%Y%m%d_%H%M%S)
     local user_name=$(git config user.name 2>/dev/null | tr '[:upper:]' '[:lower:]' | tr -d ' ' | cut -c1-8)
@@ -305,22 +305,72 @@ generate_branch_name() {
         user_name=$(whoami | cut -c1-8)
     fi
     
-    # 获取当前main分支下合并进来的所有分支（排除premerge分支和main/master分支）
-    local merged_branches=""
-    merged_branches=$(git branch --merged | grep -iv "premerge" | grep -iv "main\|master" | \
-        sed 's/^[* ]*//' | \
-        tr '\n' '-' | \
-        sed 's/-$//' | \
-        tr '/' '-' | \
-        cut -c1-30)
+    # 方法1: 尝试从reflog获取最近merge的分支信息（适用于squash merge）
+    local source_branch=""
+    for i in 1 2 3 4 5; do
+        local reflog_msg=$(git reflog -$i --pretty=format:"%gs" 2>/dev/null | tail -1)
+        if echo "$reflog_msg" | grep -q "merge"; then
+            # 尝试提取分支名，支持多种格式
+            if echo "$reflog_msg" | grep -q "merge branch"; then
+                source_branch=$(echo "$reflog_msg" | sed -n "s/.*merge branch '\([^']*\)'.*/\1/p" | head -1)
+            elif echo "$reflog_msg" | grep -q "merge remote-tracking branch"; then
+                source_branch=$(echo "$reflog_msg" | sed -n "s/.*merge remote-tracking branch '\([^']*\)'.*/\1/p" | head -1)
+                # 移除 origin/ 前缀
+                source_branch=$(echo "$source_branch" | sed 's|^origin/||')
+            elif echo "$reflog_msg" | grep -q "merge"; then
+                # 尝试从更通用的格式提取
+                source_branch=$(echo "$reflog_msg" | sed -n 's/.*merge \([^[:space:]]*\).*/\1/p' | head -1)
+                source_branch=$(echo "$source_branch" | sed 's|^origin/||')
+            fi
+            
+            # 如果找到了有效的分支名，跳出循环
+            if [ -n "$source_branch" ] && [ "$source_branch" != "main" ] && [ "$source_branch" != "master" ]; then
+                break
+            fi
+        fi
+    done
     
-    # 如果没有找到合并的分支，使用简单格式
-    if [ -z "$merged_branches" ]; then
-        echo "feat/premerge-${user_name}-${timestamp}"
+    # 方法2: 如果reflog没有找到，尝试从传统的merged branches获取
+    local merged_branches=""
+    if [ -z "$source_branch" ]; then
+        merged_branches=$(git branch --merged | grep -iv "premerge" | grep -iv "main\|master" | \
+            sed 's/^[* ]*//' | \
+            tr '\n' '-' | \
+            sed 's/-$//' | \
+            tr '/' '-' | \
+            cut -c1-30)
+    fi
+    
+    # 方法3: 尝试从最近的commit message获取分支信息
+    local commit_branch=""
+    if [ -z "$source_branch" ] && [ -z "$merged_branches" ]; then
+        local recent_commit_msg=$(git log -1 --pretty=format:"%s" 2>/dev/null)
+        if echo "$recent_commit_msg" | grep -qi "merge\|squash"; then
+            # 尝试从commit message提取分支名
+            commit_branch=$(echo "$recent_commit_msg" | sed -n 's/.*[Mm]erge.*\([a-zA-Z0-9_-]*\/[a-zA-Z0-9_-]*\).*/\1/p' | head -1)
+            if [ -z "$commit_branch" ]; then
+                commit_branch=$(echo "$recent_commit_msg" | sed -n 's/.*[Ff]rom \([a-zA-Z0-9_-]*\).*/\1/p' | head -1)
+            fi
+        fi
+    fi
+    
+    # 决定使用哪个分支信息
+    local branch_info=""
+    if [ -n "$source_branch" ]; then
+        branch_info="$source_branch"
+    elif [ -n "$merged_branches" ]; then
+        branch_info="$merged_branches"
+    elif [ -n "$commit_branch" ]; then
+        branch_info="$commit_branch"
+    fi
+    
+    # 清理分支名，确保符合 Git 分支命名规范
+    if [ -n "$branch_info" ]; then
+        branch_info=$(echo "$branch_info" | sed 's/[^a-zA-Z0-9_/-]//g' | tr '/' '-' | cut -c1-25)
+        echo "feat/premerge-${branch_info}-${user_name}-${timestamp}"
     else
-        # 清理分支名，确保符合 Git 分支命名规范
-        merged_branches=$(echo "$merged_branches" | sed 's/[^a-zA-Z0-9_-]//g')
-        echo "feat/premerge-${merged_branches}-${user_name}-${timestamp}"
+        # 如果都没有找到，使用通用格式
+        echo "feat/premerge-${user_name}-${timestamp}"
     fi
 }
 
@@ -758,7 +808,7 @@ echo "   ✓ 切换分支/合并后自动恢复配置"
 echo "   ✓ ✅ 允许 merge 到 main 分支（PR 合并，包括 squash merge）"
 echo "   ✓ 🚫 禁止在 main 分支直接 push"
 echo "   ✓ 🚫 禁止从 dev 分支 merge 到任何其他分支（包括 squash merge）"
-echo "   ✓ 🆕 自动创建临时分支 feat/premerge-user-timestamp-lastmerged"
+echo "   ✓ 🆕 自动创建临时分支 feat/premerge-sourcebranch-user-timestamp"
 echo "   ✓ 🆕 自动推送并打开 PR 页面"
 echo "   ✓ 🆕 main 分支保持不变"
 echo "   ✓ 跨平台支持（macOS/Linux/Windows）"
@@ -785,7 +835,7 @@ echo "        → 禁止从 dev 分支 merge 到任何其他分支"
 echo ""
 echo "   🔄 自动流程（仅限merge提交，包括squash merge）："
 echo "      1. 在 main 上执行 git push（包含merge提交或squash merge提交）"
-echo "      2. 自动创建 feat/premerge-user-YYYYMMDD_HHMMSS-lastmerged"
+echo "      2. 自动创建 feat/premerge-sourcebranch-user-YYYYMMDD_HHMMSS"
 echo "      3. 将本地新提交转移到临时分支"
 echo "      4. 推送临时分支到远程"
 echo "      5. 切回 main 分支（保持原状态）"
@@ -797,6 +847,11 @@ echo "   • 首次使用需执行: gh auth login"
 echo "   • 如需绕过（不推荐）: git push --no-verify"
 echo "   • dev 分支仅用于开发，禁止 merge 到其他分支"
 echo "   • 从 dev 分支创建功能分支时，应从目标分支（如 main）创建"
+echo ""
+echo "🌿 智能分支命名："
+echo "   • 普通 merge: feat/premerge-sourcebranch-user-timestamp"
+echo "   • Squash merge: 从 reflog 自动检测原始分支名"
+echo "   • 无法检测时: feat/premerge-user-timestamp"
 echo ""
 echo "🪟 Windows 用户特别提示："
 echo "   • 如遇到 'credential-manager-core' 错误，脚本会自动修复"
