@@ -449,12 +449,28 @@ OS_TYPE=$(detect_os)
 
 # 检查 gh CLI
 check_gh_cli() {
-    command -v gh &> /dev/null
+    echo "   🔍 检查GitHub CLI是否安装..."
+    echo "   执行命令: command -v gh"
+    if command -v gh &> /dev/null; then
+        echo "   ✅ GitHub CLI 已安装: $(which gh)"
+        return 0
+    else
+        echo "   ❌ GitHub CLI 未安装"
+        return 1
+    fi
 }
 
 # 检查认证
 check_gh_auth() {
-    gh auth status &> /dev/null
+    echo "   🔍 检查GitHub CLI认证状态..."
+    echo "   执行命令: gh auth status"
+    if gh auth status &> /dev/null; then
+        echo "   ✅ GitHub CLI 已认证"
+        return 0
+    else
+        echo "   ❌ GitHub CLI 未认证"
+        return 1
+    fi
 }
 
 # 安装提示
@@ -504,21 +520,36 @@ generate_branch_name() {
         
         if echo "$reflog_msg" | grep -q "merge"; then
             echo "      ✓ 发现merge操作"
-            # 尝试提取分支名，支持多种格式
-            if echo "$reflog_msg" | grep -q "merge branch"; then
-                source_branch=$(echo "$reflog_msg" | sed -n "s/.*merge branch '\([^']*\)'.*/\1/p" | head -1)
-                echo "      📝 提取方式: merge branch 格式"
-            elif echo "$reflog_msg" | grep -q "merge remote-tracking branch"; then
-                source_branch=$(echo "$reflog_msg" | sed -n "s/.*merge remote-tracking branch '\([^']*\)'.*/\1/p" | head -1)
-                # 移除 origin/ 前缀
-                source_branch=$(echo "$source_branch" | sed 's|^origin/||')
-                echo "      📝 提取方式: remote-tracking branch 格式"
-            elif echo "$reflog_msg" | grep -q "merge"; then
-                # 尝试从更通用的格式提取
-                source_branch=$(echo "$reflog_msg" | sed -n 's/.*merge \([^[:space:]]*\).*/\1/p' | head -1)
-                source_branch=$(echo "$source_branch" | sed 's|^origin/||')
-                echo "      📝 提取方式: 通用merge格式"
-            fi
+                       # 尝试提取分支名，支持多种格式
+                       echo "      🔍 开始分析merge格式..."
+                       if echo "$reflog_msg" | grep -q "merge branch"; then
+                           echo "      📋 检测到 'merge branch' 格式"
+                           source_branch=$(echo "$reflog_msg" | sed -n "s/.*merge branch '\([^']*\)'.*/\1/p" | head -1)
+                           echo "      📝 提取方式: merge branch 格式"
+                           echo "      🎯 sed提取结果: '$source_branch'"
+                       elif echo "$reflog_msg" | grep -q "merge remote-tracking branch"; then
+                           echo "      📋 检测到 'merge remote-tracking branch' 格式"
+                           source_branch=$(echo "$reflog_msg" | sed -n "s/.*merge remote-tracking branch '\([^']*\)'.*/\1/p" | head -1)
+                           echo "      🎯 sed提取结果(带origin): '$source_branch'"
+                           # 移除 origin/ 前缀
+                           source_branch=$(echo "$source_branch" | sed 's|^origin/||')
+                           echo "      📝 提取方式: remote-tracking branch 格式"
+                           echo "      🎯 移除origin后: '$source_branch'"
+                       elif echo "$reflog_msg" | grep -q "merge.*:"; then
+                           echo "      📋 检测到 'merge xxx: Fast-forward' 格式"
+                           # 处理 "merge feature/test-hooks: Fast-forward" 这种格式
+                           source_branch=$(echo "$reflog_msg" | sed -n 's/.*merge \([^:]*\):.*/\1/p' | head -1)
+                           echo "      📝 提取方式: Fast-forward格式"
+                           echo "      🎯 sed提取结果: '$source_branch'"
+                       elif echo "$reflog_msg" | grep -q "merge"; then
+                           echo "      📋 检测到通用 'merge' 格式"
+                           # 尝试从更通用的格式提取
+                           source_branch=$(echo "$reflog_msg" | sed -n 's/.*merge \([^[:space:]]*\).*/\1/p' | head -1)
+                           echo "      🎯 sed提取结果(原始): '$source_branch'"
+                           source_branch=$(echo "$source_branch" | sed 's|^origin/||')
+                           echo "      📝 提取方式: 通用merge格式"
+                           echo "      🎯 移除origin后: '$source_branch'"
+                       fi
             
             echo "      🎯 提取到的分支名: ${source_branch:-'无'}"
             
@@ -918,7 +949,9 @@ main() {
         
         # 生成临时分支名
         echo "🔄 正在生成临时分支名..."
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         NEW_BRANCH=$(generate_branch_name | tail -1)
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo "🌿 最终临时分支: $NEW_BRANCH"
         echo ""
         
@@ -929,6 +962,7 @@ main() {
         
         # 创建新分支（基于当前 HEAD）
         echo "🔧 正在创建新分支..."
+        echo "   执行命令: git checkout -b \"$NEW_BRANCH\""
         if ! git checkout -b "$NEW_BRANCH" 2>/dev/null; then
             echo "❌ 创建分支失败"
             exit 1
@@ -939,9 +973,14 @@ main() {
         echo "🚀 正在推送到远程仓库..."
         echo "   目标: origin/$NEW_BRANCH"
         echo "   操作: git push -u origin $NEW_BRANCH"
+        echo "   📋 推送前状态检查..."
+        echo "      当前分支: $(git rev-parse --abbrev-ref HEAD)"
+        echo "      当前HEAD: $(git rev-parse HEAD)"
+        echo "      远程仓库: $(git remote -v | grep origin | head -1)"
         echo ""
         
         # 推送到远程（设置上游）
+        echo "   执行命令: git push -u origin \"$NEW_BRANCH\""
         if ! git push -u origin "$NEW_BRANCH" 2>&1; then
             echo ""
             echo "❌ 推送失败，正在恢复环境..."
@@ -966,6 +1005,7 @@ main() {
         
         # 检查 gh CLI 并创建 PR
         echo "🔍 正在检查 GitHub CLI 工具..."
+        echo "   执行命令: check_gh_cli"
         if ! check_gh_cli; then
             echo "❌ GitHub CLI 未安装"
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -984,6 +1024,7 @@ main() {
         
         echo "✅ GitHub CLI 已安装"
         echo "🔐 正在检查 GitHub 认证状态..."
+        echo "   执行命令: check_gh_auth"
         if ! check_gh_auth; then
             echo "❌ GitHub CLI 未登录"
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -1014,12 +1055,14 @@ main() {
         
         # 切换到新分支来创建 PR
         echo "🔄 切换到源分支进行 PR 创建..."
+        echo "   执行命令: git checkout \"$NEW_BRANCH\""
         git checkout "$NEW_BRANCH" 2>/dev/null
         echo "✅ 已切换到 $NEW_BRANCH"
         
         echo ""
         echo "🌐 正在打开浏览器创建 PR..."
         echo "   命令: gh pr create --web --base $protected_branch"
+        echo "   执行命令: gh pr create --web --base \"$protected_branch\""
         
         # 使用 --web 打开浏览器，base 指定目标分支
         if gh pr create --web --base "$protected_branch" 2>/dev/null; then
