@@ -91,17 +91,83 @@ echo ""
 # 创建 .githooks 中的自定义钩子
 # ==========================================
 
-# 1. pre-commit：仅提示，不阻止（允许在 main 上 commit）
+# 1. pre-commit：检查dev分支merge + 主分支提示
 cat << 'EOF' > "$CUSTOM_HOOKS/pre-commit"
 #!/bin/bash
 # ==========================================
-# 💡 提示：main 分支 commit 警告
+# 🚫 pre-commit Hook - 检查dev分支merge + 主分支提示
+# 检查是否刚刚执行了从dev分支的fast-forward merge
 # ==========================================
+
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+
+# 首先检查是否刚刚执行了从dev分支的merge（包括fast-forward）
+echo ""
+echo "🔍 检查是否存在dev分支的merge操作..."
+
+# 检查最近的reflog条目
+RECENT_REFLOG=$(git reflog -1 --pretty=format:"%gs" 2>/dev/null)
+echo "   最近操作: $RECENT_REFLOG"
+
+# 检查是否是从dev分支的merge操作
+if echo "$RECENT_REFLOG" | grep -q "merge.*\bdev\b\|merge.*origin/dev"; then
+    echo ""
+    echo "🚫 错误：检测到从 dev 分支的 merge 操作！"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "⚠️  检测到刚刚从 dev 分支 merge 到 '$CURRENT_BRANCH'"
+    echo "⚠️  dev 分支是开发分支，禁止将其代码 merge 到其他分支"
+    echo "🔍 检测方法: reflog analysis"
+    echo ""
+    echo "💡 正确的工作流程："
+    echo "   1. 撤销此次merge: git reset --hard HEAD~1"
+    echo "   2. 从目标分支创建功能分支: git checkout -b feature/xxx"
+    echo "   3. 在功能分支上开发并提交"
+    echo "   4. 推送功能分支: git push origin feature/xxx"
+    echo "   5. 创建 PR: feature/xxx → $CURRENT_BRANCH"
+    echo ""
+    echo "💡 如需强制绕过此限制："
+    echo "   git commit --no-verify"
+    echo "   ⚠️  注意：这将绕过dev分支保护，强烈不推荐！"
+    echo ""
+    echo "🔄 立即撤销merge："
+    echo "   git reset --hard HEAD~1"
+    echo ""
+    echo "❌ 阻止提交操作"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    exit 1
+fi
+
+# 检查是否有未提交的更改来自dev分支merge
+if git diff --cached --quiet; then
+    # 没有staged的更改，可能是fast-forward merge后的状态
+    # 检查最近的commit是否来自dev分支
+    if [ "$(git rev-list --count HEAD^..HEAD 2>/dev/null)" = "1" ]; then
+        LATEST_COMMIT_MSG=$(git log -1 --pretty=format:"%s" 2>/dev/null)
+        echo "   最新commit信息: $LATEST_COMMIT_MSG"
+        
+        # 检查是否包含dev分支相关的信息
+        if echo "$LATEST_COMMIT_MSG" | grep -qi "dev"; then
+            echo ""
+            echo "🚫 错误：检测到来自 dev 分支的提交！"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "⚠️  最新的提交可能来自 dev 分支的 merge"
+            echo "⚠️  dev 分支是开发分支，禁止将其代码 merge 到其他分支"
+            echo ""
+            echo "💡 如果这是错误检测，可以使用："
+            echo "   git commit --no-verify"
+            echo ""
+            echo "🔄 如果确实是dev分支merge，请撤销："
+            echo "   git reset --hard HEAD~1"
+            echo ""
+            echo "❌ 阻止提交操作"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            exit 1
+        fi
+    fi
+fi
 
 # 定义受保护的分支列表
 PROTECTED_BRANCHES=("main" "master")
-
-CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
 # 检查当前分支是否在保护列表中
 is_protected=false
@@ -120,10 +186,11 @@ if [ "$is_protected" = true ]; then
     echo ""
 fi
 
+echo "✅ pre-commit 检查通过"
 exit 0
 EOF
 
-echo "💡 已创建 pre-commit 钩子（仅警告，不阻止）"
+echo "🚫 已创建增强版 pre-commit 钩子（检查dev分支merge + 主分支提示）"
 echo ""
 
 # ==========================================
@@ -244,6 +311,71 @@ EOF
 chmod +x "$CUSTOM_HOOKS/prepare-commit-msg"
 
 echo "🚫 已创建 prepare-commit-msg 钩子（在merge准备提交时阻止dev分支merge）"
+echo ""
+
+# ==========================================
+# 1.6. post-merge：检测并撤销dev分支的merge
+# ==========================================
+
+cat << 'EOF' > "$CUSTOM_HOOKS/post-merge"
+#!/bin/bash
+# ==========================================
+# 🚫 post-merge Hook - 检测并撤销dev分支的merge
+# 在merge完成后立即检测，如果是从dev分支merge则撤销
+# ==========================================
+
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+
+echo ""
+echo "🔍 post-merge: 检查刚完成的merge操作..."
+
+# 检查最近的reflog条目
+RECENT_REFLOG=$(git reflog -1 --pretty=format:"%gs" 2>/dev/null)
+echo "   最近操作: $RECENT_REFLOG"
+
+# 检查是否是从dev分支的merge操作
+if echo "$RECENT_REFLOG" | grep -q "merge.*\bdev\b\|merge.*origin/dev"; then
+    echo ""
+    echo "🚫 错误：检测到从 dev 分支的 merge 操作！"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "⚠️  检测到刚刚从 dev 分支 merge 到 '$CURRENT_BRANCH'"
+    echo "⚠️  dev 分支是开发分支，禁止将其代码 merge 到其他分支"
+    echo "🔍 检测方法: post-merge reflog analysis"
+    echo ""
+    echo "🔄 正在自动撤销此次merge..."
+    
+    # 自动撤销merge
+    git reset --hard HEAD~1
+    
+    if [ $? -eq 0 ]; then
+        echo "✅ 已成功撤销从dev分支的merge"
+    else
+        echo "❌ 撤销失败，请手动执行: git reset --hard HEAD~1"
+    fi
+    
+    echo ""
+    echo "💡 正确的工作流程："
+    echo "   1. 从目标分支创建功能分支: git checkout -b feature/xxx"
+    echo "   2. 在功能分支上开发并提交"
+    echo "   3. 推送功能分支: git push origin feature/xxx"
+    echo "   4. 创建 PR: feature/xxx → $CURRENT_BRANCH"
+    echo ""
+    echo "💡 如需强制绕过此限制："
+    echo "   git -c core.hooksPath=/dev/null merge dev"
+    echo "   ⚠️  注意：这将绕过dev分支保护，强烈不推荐！"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    
+    # 不退出，因为merge已经被撤销了
+    exit 0
+fi
+
+echo "✅ post-merge 检查通过"
+exit 0
+EOF
+
+chmod +x "$CUSTOM_HOOKS/post-merge"
+
+echo "🚫 已创建 post-merge 钩子（检测并自动撤销dev分支merge）"
 echo ""
 
 # ==========================================
@@ -979,7 +1111,7 @@ echo "   ✓ 自定义 hooks 目录管理"
 echo "   ✓ 切换分支/合并后自动恢复配置"
 echo "   ✓ ✅ 允许 merge 到 main 分支（PR 合并，包括 squash merge）"
 echo "   ✓ 🚫 禁止在 main 分支直接 push"
-echo "   ✓ 🚫 严格禁止从名为 'dev' 的分支 merge 到任何其他分支（在 merge 准备提交时阻止）"
+echo "   ✓ 🚫 严格禁止从名为 'dev' 的分支 merge 到任何其他分支（多重检测+自动撤销）"
 echo "   ✓ 🆕 自动创建临时分支 feat/premerge-sourcebranch-user-timestamp"
 echo "   ✓ 🆕 自动推送并打开 PR 页面"
 echo "   ✓ 🆕 main 分支保持不变"
@@ -999,11 +1131,11 @@ echo "      • git checkout main && git commit && git push"
 echo "        → 直接修改：提示使用 --no-verify 强制推送"
 echo "        → merge修改：自动转移到临时分支并创建 PR"
 echo "      • git checkout main && git merge dev"
-echo "        → ❌ 在 merge 准备提交时被 prepare-commit-msg 钩子阻止"
+echo "        → ❌ 被 post-merge 钩子检测并自动撤销"
 echo "      • git checkout main && git merge --squash dev"
 echo "        → ❌ 在 merge 准备提交时被 prepare-commit-msg 钩子阻止"
 echo "      • git checkout feature-branch && git merge dev"
-echo "        → ❌ 在 merge 准备提交时被 prepare-commit-msg 钩子阻止"
+echo "        → ❌ 被 post-merge 钩子检测并自动撤销"
 echo ""
 echo "   🔄 自动流程（仅限merge提交，包括squash merge）："
 echo "      1. 在 main 上执行 git push（包含merge提交或squash merge提交）"
@@ -1019,7 +1151,7 @@ echo "   • 首次使用需执行: gh auth login"
 echo "   • 如需绕过（不推荐）: git push --no-verify"
 echo "   • ⚠️  名为 'dev' 的分支严格禁止 merge 到其他分支（在 merge 前就会被阻止）"
 echo "   • 从 dev 分支创建功能分支时，应从目标分支（如 main）创建"
-echo "   • 新增：prepare-commit-msg 钩子，在merge准备提交时阻止dev分支merge"
+echo "   • 新增：多重dev分支保护（pre-commit + prepare-commit-msg + post-merge）"
 echo "   • 新增：详细的执行日志，清晰显示每个步骤的进度和状态"
 echo ""
 echo "🌿 智能分支命名："
