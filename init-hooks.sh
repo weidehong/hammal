@@ -983,6 +983,30 @@ main() {
         if is_merge_operation "$UNPUSHED_COMMITS"; then
             echo "🔀 检测到merge操作，这可能是从其他分支合并的更改（包括 squash merge）"
             
+            # 检测squash merge的源分支信息
+            echo "🔍 检测merge的源分支信息..."
+            echo "   🖥️  系统信息: $(uname -s 2>/dev/null || echo 'Windows')"
+            local merge_source_branch=""
+            
+            # 检查最近的分支切换记录
+            echo "   🔍 执行命令: git reflog --pretty=format:\"%gs\" | grep \"checkout: moving from\" | head -1"
+            local recent_checkout=$(git reflog --pretty=format:"%gs" | grep "checkout: moving from" | head -1)
+            echo "   📋 最近的分支切换: '$recent_checkout'"
+            echo "   📏 结果长度: ${#recent_checkout}"
+            
+            if echo "$recent_checkout" | grep -q "checkout: moving from feature/\|checkout: moving from hotfix/\|checkout: moving from bugfix/"; then
+                echo "   ✅ 发现功能分支切换记录"
+                merge_source_branch=$(echo "$recent_checkout" | sed -n 's/.*checkout: moving from \([^[:space:]]*\) to.*/\1/p')
+                echo "   🎯 检测到源分支: '$merge_source_branch'"
+                echo "   📏 源分支名长度: ${#merge_source_branch}"
+                
+                # 设置全局变量供generate_branch_name使用
+                export DETECTED_SOURCE_BRANCH="$merge_source_branch"
+                echo "   📋 设置源分支信息: $DETECTED_SOURCE_BRANCH"
+            else
+                echo "   ❌ 未检测到功能分支切换记录"
+            fi
+            
             # 检查是否是从dev分支的merge（双重保险，正常情况下pre-merge-commit已经阻止了）
             if is_merge_from_dev; then
                 echo ""
