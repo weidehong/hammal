@@ -137,10 +137,56 @@ if echo "$RECENT_REFLOG" | grep -q "merge.*\bdev\b\|merge.*origin/dev"; then
     exit 1
 fi
 
-# 检查是否有未提交的更改来自dev分支merge
-if git diff --cached --quiet; then
-    # 没有staged的更改，可能是fast-forward merge后的状态
-    # 检查最近的commit是否来自dev分支
+# 检查是否有staged的更改（可能来自squash merge）
+if ! git diff --cached --quiet; then
+    echo "   检测到staged的更改，检查是否来自dev分支的squash merge..."
+    
+    # 获取staged的文件列表
+    STAGED_FILES=$(git diff --cached --name-only)
+    echo "   staged文件: $STAGED_FILES"
+    
+    # 检查最近的reflog，看是否有merge操作但没有创建commit
+    RECENT_OPERATIONS=$(git reflog -3 --pretty=format:"%gs" 2>/dev/null)
+    echo "   最近3个操作:"
+    echo "$RECENT_OPERATIONS" | sed 's/^/      /'
+    
+    # 检查是否有merge操作的痕迹
+    if echo "$RECENT_OPERATIONS" | grep -q "merge.*\bdev\b\|merge.*origin/dev"; then
+        echo ""
+        echo "🚫 错误：检测到来自 dev 分支的 squash merge！"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "⚠️  检测到从 dev 分支进行的 squash merge 操作"
+        echo "⚠️  dev 分支是开发分支，禁止将其代码 merge 到其他分支"
+        echo "🔍 检测方法: staged changes + reflog analysis"
+        echo ""
+        echo "💡 正确的工作流程："
+        echo "   1. 撤销当前更改: git reset --hard HEAD"
+        echo "   2. 从目标分支创建功能分支: git checkout -b feature/xxx"
+        echo "   3. 在功能分支上开发并提交"
+        echo "   4. 推送功能分支: git push origin feature/xxx"
+        echo "   5. 创建 PR: feature/xxx → $CURRENT_BRANCH"
+        echo ""
+        echo "💡 如需强制绕过此限制："
+        echo "   git commit --no-verify"
+        echo "   ⚠️  注意：这将绕过dev分支保护，强烈不推荐！"
+        echo ""
+        echo "🔄 立即撤销squash merge："
+        echo "   git reset --hard HEAD"
+        echo ""
+        echo "❌ 阻止提交操作"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        exit 1
+    fi
+    
+    # 额外检查：分析staged的更改是否可能来自dev分支
+    # 通过检查文件内容的差异模式
+    DEV_RELATED_CHANGES=$(git diff --cached | grep -i "dev\|development" | wc -l)
+    if [ "$DEV_RELATED_CHANGES" -gt 0 ]; then
+        echo "   ⚠️  警告：staged的更改中包含dev相关内容"
+        echo "   如果这是从dev分支merge的结果，请撤销: git reset --hard HEAD"
+    fi
+else
+    # 没有staged的更改，检查是否是fast-forward merge后的状态
     if [ "$(git rev-list --count HEAD^..HEAD 2>/dev/null)" = "1" ]; then
         LATEST_COMMIT_MSG=$(git log -1 --pretty=format:"%s" 2>/dev/null)
         echo "   最新commit信息: $LATEST_COMMIT_MSG"
@@ -377,6 +423,7 @@ chmod +x "$CUSTOM_HOOKS/post-merge"
 
 echo "🚫 已创建 post-merge 钩子（检测并自动撤销dev分支merge）"
 echo ""
+
 
 # ==========================================
 # 2. pre-push：禁止 main 分支 push + 自动转移到临时分支
@@ -1111,7 +1158,7 @@ echo "   ✓ 自定义 hooks 目录管理"
 echo "   ✓ 切换分支/合并后自动恢复配置"
 echo "   ✓ ✅ 允许 merge 到 main 分支（PR 合并，包括 squash merge）"
 echo "   ✓ 🚫 禁止在 main 分支直接 push"
-echo "   ✓ 🚫 严格禁止从名为 'dev' 的分支 merge 到任何其他分支（多重检测+自动撤销）"
+echo "   ✓ 🚫 严格禁止从名为 'dev' 的分支 merge 到任何其他分支（多重钩子保护）"
 echo "   ✓ 🆕 自动创建临时分支 feat/premerge-sourcebranch-user-timestamp"
 echo "   ✓ 🆕 自动推送并打开 PR 页面"
 echo "   ✓ 🆕 main 分支保持不变"
@@ -1133,7 +1180,7 @@ echo "        → merge修改：自动转移到临时分支并创建 PR"
 echo "      • git checkout main && git merge dev"
 echo "        → ❌ 被 post-merge 钩子检测并自动撤销"
 echo "      • git checkout main && git merge --squash dev"
-echo "        → ❌ 在 merge 准备提交时被 prepare-commit-msg 钩子阻止"
+echo "        → ❌ 被 pre-commit 钩子检测并阻止提交"
 echo "      • git checkout feature-branch && git merge dev"
 echo "        → ❌ 被 post-merge 钩子检测并自动撤销"
 echo ""
@@ -1151,7 +1198,7 @@ echo "   • 首次使用需执行: gh auth login"
 echo "   • 如需绕过（不推荐）: git push --no-verify"
 echo "   • ⚠️  名为 'dev' 的分支严格禁止 merge 到其他分支（在 merge 前就会被阻止）"
 echo "   • 从 dev 分支创建功能分支时，应从目标分支（如 main）创建"
-echo "   • 新增：多重dev分支保护（pre-commit + prepare-commit-msg + post-merge）"
+echo "   • 新增：多重dev分支保护（pre-commit检测squash + post-merge检测merge）"
 echo "   • 新增：详细的执行日志，清晰显示每个步骤的进度和状态"
 echo ""
 echo "🌿 智能分支命名："
