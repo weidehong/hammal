@@ -990,14 +990,47 @@ main() {
         else
             echo "📝 检测到直接在 $CURRENT_BRANCH 分支上的提交"
             echo ""
-            echo "🚫 禁止直接推送到 $CURRENT_BRANCH 分支"
-            echo ""
-            echo "💡 如果你确定要直接推送到 $CURRENT_BRANCH 分支，请使用："
-            echo "   git push --no-verify"
-            echo ""
-            echo "⚠️  注意：这将绕过分支保护，请谨慎使用！"
-            echo "📋 推荐做法：创建功能分支后通过PR合并"
-            exit 1
+            
+            # 检查是否可能是squash merge的结果
+            echo "🔍 检查是否为squash merge的结果..."
+            local is_squash_merge=false
+            
+            # 检查最近的reflog，看是否有从feature分支切换过来的记录
+            local recent_checkout=$(git reflog --pretty=format:"%gs" | grep "checkout: moving from" | head -1)
+            echo "   📋 最近的分支切换: $recent_checkout"
+            
+            if echo "$recent_checkout" | grep -q "checkout: moving from feature/\|checkout: moving from hotfix/\|checkout: moving from bugfix/"; then
+                local source_branch=$(echo "$recent_checkout" | sed -n 's/.*checkout: moving from \([^[:space:]]*\) to.*/\1/p')
+                echo "   🎯 检测到从功能分支切换: $source_branch"
+                
+                # 检查提交的文件变更是否合理（不是简单的单文件修改）
+                local changed_files=$(git diff --name-only HEAD~1..HEAD 2>/dev/null)
+                local file_count=$(echo "$changed_files" | wc -l)
+                echo "   📝 变更文件数: $file_count"
+                echo "   📝 变更文件: $changed_files"
+                
+                # 如果从功能分支切换过来，且有合理的文件变更，很可能是squash merge
+                if [ "$file_count" -ge 1 ]; then
+                    echo "   ✅ 推测这是来自 $source_branch 的 squash merge"
+                    is_squash_merge=true
+                    
+                    # 将其视为merge操作处理
+                    echo "🔄 将此提交视为squash merge，转移到临时分支..."
+                fi
+            fi
+            
+            if [ "$is_squash_merge" = false ]; then
+                echo "   ❌ 不是squash merge，确实是直接提交"
+                echo ""
+                echo "🚫 禁止直接推送到 $CURRENT_BRANCH 分支"
+                echo ""
+                echo "💡 如果你确定要直接推送到 $CURRENT_BRANCH 分支，请使用："
+                echo "   git push --no-verify"
+                echo ""
+                echo "⚠️  注意：这将绕过分支保护，请谨慎使用！"
+                echo "📋 推荐做法：创建功能分支后通过PR合并"
+                exit 1
+            fi
         fi
         
         echo ""
