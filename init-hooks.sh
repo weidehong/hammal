@@ -509,57 +509,69 @@ generate_branch_name() {
     fi
     echo "   📅 时间戳: $timestamp"
     
-    # 方法0: 检查是否有staged的更改（可能来自squash merge）
+    # 方法0: 优先使用已检测到的源分支信息
     echo ""
-    echo "🔍 方法0: 检查staged更改（squash merge检测）"
+    echo "🔍 方法0: 检查预设的源分支信息"
     local squash_source_branch=""
-    if ! git diff --cached --quiet; then
-        echo "   📋 检测到staged的更改，可能来自squash merge"
-        local staged_files=$(git diff --cached --name-only)
-        echo "   📝 staged文件: $staged_files"
-        
-        # 检查staged的diff信息，寻找可能的分支线索
-        echo "   🔍 分析staged的diff信息..."
-        local diff_info=$(git diff --cached --stat 2>/dev/null)
-        echo "   📝 diff统计: $diff_info"
-        
-        # 检查是否存在 .git/SQUASH_MSG 文件（squash merge时会创建）
-        if [ -f ".git/SQUASH_MSG" ]; then
-            echo "   📋 发现 .git/SQUASH_MSG 文件"
-            local squash_msg=$(cat .git/SQUASH_MSG 2>/dev/null)
-            echo "   📝 SQUASH_MSG内容: $squash_msg"
-            # 尝试从squash消息中提取分支信息
-            squash_source_branch=$(echo "$squash_msg" | grep -o "feature/[^[:space:]]*\|[^[:space:]]*/[^[:space:]]*" | head -1)
-            echo "   🎯 从SQUASH_MSG提取的分支名: '$squash_source_branch'"
-        fi
-        
-        # 如果SQUASH_MSG没找到，尝试从最近的分支列表获取
-        if [ -z "$squash_source_branch" ]; then
-            echo "   🔍 尝试从最近访问的分支获取信息..."
-            # 获取最近切换过的分支（除了当前分支）
-            local recent_branches=$(git reflog --pretty=format:"%gs" | grep "checkout: moving from" | head -5)
-            echo "   📋 最近的分支切换记录:"
-            echo "$recent_branches" | sed 's/^/      /'
-            
-            # 提取最近从哪个分支切换过来的
-            local last_branch=$(echo "$recent_branches" | head -1 | sed -n 's/.*checkout: moving from \([^[:space:]]*\) to.*/\1/p')
-            echo "   🎯 最近来源分支: '$last_branch'"
-            
-            # 如果是feature分支，很可能就是squash merge的源分支
-            if echo "$last_branch" | grep -q "feature/\|hotfix/\|bugfix/"; then
-                squash_source_branch="$last_branch"
-                echo "   ✅ 推测squash merge源分支: $squash_source_branch"
+    if [ -n "$DETECTED_SOURCE_BRANCH" ]; then
+        squash_source_branch="$DETECTED_SOURCE_BRANCH"
+        echo "   ✅ 使用预设的源分支信息: $squash_source_branch"
+    else
+        echo "   - 没有预设的源分支信息，继续其他检测方法"
+    fi
+    
+    # 方法0.1: 检查是否有staged的更改（可能来自squash merge）
+    if [ -z "$squash_source_branch" ]; then
+        echo ""
+        echo "🔍 方法0.1: 检查staged更改（squash merge检测）"
+            if ! git diff --cached --quiet; then
+                echo "   📋 检测到staged的更改，可能来自squash merge"
+                local staged_files=$(git diff --cached --name-only)
+                echo "   📝 staged文件: $staged_files"
+                
+                # 检查staged的diff信息，寻找可能的分支线索
+                echo "   🔍 分析staged的diff信息..."
+                local diff_info=$(git diff --cached --stat 2>/dev/null)
+                echo "   📝 diff统计: $diff_info"
+                
+                # 检查是否存在 .git/SQUASH_MSG 文件（squash merge时会创建）
+                if [ -f ".git/SQUASH_MSG" ]; then
+                    echo "   📋 发现 .git/SQUASH_MSG 文件"
+                    local squash_msg=$(cat .git/SQUASH_MSG 2>/dev/null)
+                    echo "   📝 SQUASH_MSG内容: $squash_msg"
+                    # 尝试从squash消息中提取分支信息
+                    squash_source_branch=$(echo "$squash_msg" | grep -o "feature/[^[:space:]]*\|[^[:space:]]*/[^[:space:]]*" | head -1)
+                    echo "   🎯 从SQUASH_MSG提取的分支名: '$squash_source_branch'"
+                fi
+                
+                # 如果SQUASH_MSG没找到，尝试从最近的分支列表获取
+                if [ -z "$squash_source_branch" ]; then
+                    echo "   🔍 尝试从最近访问的分支获取信息..."
+                    # 获取最近切换过的分支（除了当前分支）
+                    local recent_branches=$(git reflog --pretty=format:"%gs" | grep "checkout: moving from" | head -5)
+                    echo "   📋 最近的分支切换记录:"
+                    echo "$recent_branches" | sed 's/^/      /'
+                    
+                    # 提取最近从哪个分支切换过来的
+                    local last_branch=$(echo "$recent_branches" | head -1 | sed -n 's/.*checkout: moving from \([^[:space:]]*\) to.*/\1/p')
+                    echo "   🎯 最近来源分支: '$last_branch'"
+                    
+                    # 如果是feature分支，很可能就是squash merge的源分支
+                    if echo "$last_branch" | grep -q "feature/\|hotfix/\|bugfix/"; then
+                        squash_source_branch="$last_branch"
+                        echo "   ✅ 推测squash merge源分支: $squash_source_branch"
+                    fi
+                fi
+                
+                if [ -n "$squash_source_branch" ]; then
+                    echo "   ✅ 方法0.1成功: $squash_source_branch"
+                else
+                    echo "   ❌ 方法0.1失败: 未找到squash merge的源分支"
+                fi
+            else
+                echo "   - 没有staged更改，跳过squash merge检测"
             fi
         fi
-        
-        if [ -n "$squash_source_branch" ]; then
-            echo "   ✅ 方法0成功: $squash_source_branch"
-        else
-            echo "   ❌ 方法0失败: 未找到squash merge的源分支"
-        fi
-    else
-        echo "   - 没有staged更改，跳过squash merge检测"
-    fi
 
     # 方法1: 尝试从reflog获取最近merge的分支信息（适用于常规merge）
     echo ""
@@ -1016,6 +1028,10 @@ main() {
                     
                     # 将其视为merge操作处理
                     echo "🔄 将此提交视为squash merge，转移到临时分支..."
+                    
+                    # 设置全局变量，供generate_branch_name函数使用
+                    export DETECTED_SOURCE_BRANCH="$source_branch"
+                    echo "   📋 设置源分支信息: $DETECTED_SOURCE_BRANCH"
                 fi
             fi
             
