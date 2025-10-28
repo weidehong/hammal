@@ -512,12 +512,17 @@ generate_branch_name() {
     # 方法0: 优先使用已检测到的源分支信息
     echo ""
     echo "🔍 方法0: 检查预设的源分支信息"
+    echo "   🖥️  系统信息: $(uname -s 2>/dev/null || echo 'Windows')"
+    echo "   🐚 Shell: $SHELL"
+    echo "   📋 检查环境变量 DETECTED_SOURCE_BRANCH..."
+    echo "   📋 DETECTED_SOURCE_BRANCH='$DETECTED_SOURCE_BRANCH'"
+    echo "   📏 长度: ${#DETECTED_SOURCE_BRANCH}"
     local squash_source_branch=""
     if [ -n "$DETECTED_SOURCE_BRANCH" ]; then
         squash_source_branch="$DETECTED_SOURCE_BRANCH"
         echo "   ✅ 使用预设的源分支信息: $squash_source_branch"
     else
-        echo "   - 没有预设的源分支信息，继续其他检测方法"
+        echo "   ❌ 没有预设的源分支信息，继续其他检测方法"
     fi
     
     # 方法0.1: 检查是否有staged的更改（可能来自squash merge）
@@ -547,14 +552,21 @@ generate_branch_name() {
                 # 如果SQUASH_MSG没找到，尝试从最近的分支列表获取
                 if [ -z "$squash_source_branch" ]; then
                     echo "   🔍 尝试从最近访问的分支获取信息..."
+                    echo "   🔍 执行命令: git reflog --pretty=format:\"%gs\" | grep \"checkout: moving from\" | head -5"
                     # 获取最近切换过的分支（除了当前分支）
                     local recent_branches=$(git reflog --pretty=format:"%gs" | grep "checkout: moving from" | head -5)
                     echo "   📋 最近的分支切换记录:"
-                    echo "$recent_branches" | sed 's/^/      /'
+                    if [ -n "$recent_branches" ]; then
+                        echo "$recent_branches" | sed 's/^/      /'
+                    else
+                        echo "      (空)"
+                    fi
                     
                     # 提取最近从哪个分支切换过来的
+                    echo "   🔍 执行命令: sed -n 's/.*checkout: moving from \([^[:space:]]*\) to.*/\1/p'"
                     local last_branch=$(echo "$recent_branches" | head -1 | sed -n 's/.*checkout: moving from \([^[:space:]]*\) to.*/\1/p')
                     echo "   🎯 最近来源分支: '$last_branch'"
+                    echo "   📏 分支名长度: ${#last_branch}"
                     
                     # 如果是feature分支，很可能就是squash merge的源分支
                     if echo "$last_branch" | grep -q "feature/\|hotfix/\|bugfix/"; then
@@ -1005,15 +1017,25 @@ main() {
             
             # 检查是否可能是squash merge的结果
             echo "🔍 检查是否为squash merge的结果..."
+            echo "   🖥️  系统信息: $(uname -s 2>/dev/null || echo 'Windows')"
+            echo "   🐚 Shell: $SHELL"
+            echo "   📂 当前目录: $(pwd)"
             local is_squash_merge=false
             
             # 检查最近的reflog，看是否有从feature分支切换过来的记录
+            echo "   🔍 执行命令: git reflog --pretty=format:\"%gs\" | grep \"checkout: moving from\" | head -1"
             local recent_checkout=$(git reflog --pretty=format:"%gs" | grep "checkout: moving from" | head -1)
-            echo "   📋 最近的分支切换: $recent_checkout"
+            echo "   📋 最近的分支切换: '$recent_checkout'"
+            echo "   📏 结果长度: ${#recent_checkout}"
             
+            echo "   🔍 检查是否包含功能分支切换..."
             if echo "$recent_checkout" | grep -q "checkout: moving from feature/\|checkout: moving from hotfix/\|checkout: moving from bugfix/"; then
+                echo "   ✅ 发现功能分支切换记录"
+                echo "   🔍 提取源分支名..."
+                echo "   🔍 执行命令: sed -n 's/.*checkout: moving from \([^[:space:]]*\) to.*/\1/p'"
                 local source_branch=$(echo "$recent_checkout" | sed -n 's/.*checkout: moving from \([^[:space:]]*\) to.*/\1/p')
-                echo "   🎯 检测到从功能分支切换: $source_branch"
+                echo "   🎯 检测到从功能分支切换: '$source_branch'"
+                echo "   📏 源分支名长度: ${#source_branch}"
                 
                 # 检查提交的文件变更是否合理（不是简单的单文件修改）
                 local changed_files=$(git diff --name-only HEAD~1..HEAD 2>/dev/null)
@@ -1360,3 +1382,10 @@ echo "   Windows: winget install --id GitHub.cli"
 echo ""
 echo "—— Git Hooks 初始化完成 ✅"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+echo "🔍 调试信息（用于排查 Windows 兼容性问题）："
+echo "   系统: $(uname -s 2>/dev/null || echo 'Unknown')"
+echo "   Shell: ${SHELL:-Unknown}"
+echo "   Git版本: $(git --version)"
+echo "   Bash版本: ${BASH_VERSION:-Unknown}"
+echo ""
