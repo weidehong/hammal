@@ -109,14 +109,14 @@ echo "🔍 检查是否存在dev分支的merge操作..."
 RECENT_REFLOG=$(git reflog -1 --pretty=format:"%gs" 2>/dev/null)
 echo "   最近操作: $RECENT_REFLOG"
 
-# 检查是否是从dev分支的merge操作
+# 只有当最近操作是从dev分支merge时才阻止
 if echo "$RECENT_REFLOG" | grep -q "merge.*\bdev\b\|merge.*origin/dev"; then
     echo ""
     echo "🚫 错误：检测到从 dev 分支的 merge 操作！"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "⚠️  检测到刚刚从 dev 分支 merge 到 '$CURRENT_BRANCH'"
     echo "⚠️  dev 分支是开发分支，禁止将其代码 merge 到其他分支"
-    echo "🔍 检测方法: reflog analysis"
+    echo "🔍 检测方法: latest reflog analysis"
     echo ""
     echo "💡 正确的工作流程："
     echo "   1. 撤销此次merge: git reset --hard HEAD~1"
@@ -135,6 +135,8 @@ if echo "$RECENT_REFLOG" | grep -q "merge.*\bdev\b\|merge.*origin/dev"; then
     echo "❌ 阻止提交操作"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     exit 1
+else
+    echo "   ✅ 最近操作不是dev分支merge"
 fi
 
 # 检查是否有staged的更改（可能来自squash merge）
@@ -145,19 +147,18 @@ if ! git diff --cached --quiet; then
     STAGED_FILES=$(git diff --cached --name-only)
     echo "   staged文件: $STAGED_FILES"
     
-    # 检查最近的reflog，看是否有merge操作但没有创建commit
-    RECENT_OPERATIONS=$(git reflog -3 --pretty=format:"%gs" 2>/dev/null)
-    echo "   最近3个操作:"
-    echo "$RECENT_OPERATIONS" | sed 's/^/      /'
+    # 只检查最近的一个操作，并且必须是merge操作才进行检查
+    LATEST_OPERATION=$(git reflog -1 --pretty=format:"%gs" 2>/dev/null)
+    echo "   最近操作: $LATEST_OPERATION"
     
-    # 检查是否有merge操作的痕迹
-    if echo "$RECENT_OPERATIONS" | grep -q "merge.*\bdev\b\|merge.*origin/dev"; then
+    # 只有当最近的操作是merge dev时才认为是squash merge
+    if echo "$LATEST_OPERATION" | grep -q "merge.*\bdev\b\|merge.*origin/dev"; then
         echo ""
         echo "🚫 错误：检测到来自 dev 分支的 squash merge！"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo "⚠️  检测到从 dev 分支进行的 squash merge 操作"
         echo "⚠️  dev 分支是开发分支，禁止将其代码 merge 到其他分支"
-        echo "🔍 检测方法: staged changes + reflog analysis"
+        echo "🔍 检测方法: staged changes + latest reflog analysis"
         echo ""
         echo "💡 正确的工作流程："
         echo "   1. 撤销当前更改: git reset --hard HEAD"
@@ -176,14 +177,8 @@ if ! git diff --cached --quiet; then
         echo "❌ 阻止提交操作"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         exit 1
-    fi
-    
-    # 额外检查：分析staged的更改是否可能来自dev分支
-    # 通过检查文件内容的差异模式
-    DEV_RELATED_CHANGES=$(git diff --cached | grep -i "dev\|development" | wc -l)
-    if [ "$DEV_RELATED_CHANGES" -gt 0 ]; then
-        echo "   ⚠️  警告：staged的更改中包含dev相关内容"
-        echo "   如果这是从dev分支merge的结果，请撤销: git reset --hard HEAD"
+    else
+        echo "   ✅ 最近操作不是dev分支merge，staged更改来自正常开发"
     fi
 else
     # 没有staged的更改，检查是否是fast-forward merge后的状态
