@@ -51,16 +51,32 @@ git config core.hooksPath "$CUSTOM_HOOKS"
 # 创建 post-checkout 钩子（自动保持 hooks 生效）
 cat << 'EOF' > "$HOOKS_DIR/post-checkout"
 #!/bin/bash
+echo "🔍 正在执行 post-checkout 钩子，检查系统环境..."
 ROOT_DIR=$(git rev-parse --show-toplevel)
+echo "🔍 仓库根目录: $ROOT_DIR"
+echo "🔍 正在设置 core.hooksPath"
 git config core.hooksPath "$ROOT_DIR/.githooks" >/dev/null 2>&1
+if [ $? -eq 0 ]; then
+    echo "🔍 设置 core.hooksPath 成功"
+else
+    echo "🔍 设置 core.hooksPath 失败"
+fi
 chmod +x "$ROOT_DIR/.githooks/"* 2>/dev/null
 EOF
 
 # 创建 post-merge 钩子（拉取或合并后保持生效）
 cat << 'EOF' > "$HOOKS_DIR/post-merge"
 #!/bin/bash
+echo "🔍 正在执行 post-merge 钩子，检查系统环境..."
 ROOT_DIR=$(git rev-parse --show-toplevel)
+echo "🔍 仓库根目录: $ROOT_DIR"
+echo "🔍 正在设置 core.hooksPath"
 git config core.hooksPath "$ROOT_DIR/.githooks" >/dev/null 2>&1
+if [ $? -eq 0 ]; then
+    echo "🔍 设置 core.hooksPath 成功"
+else
+    echo "🔍 设置 core.hooksPath 失败"
+fi
 chmod +x "$ROOT_DIR/.githooks/"* 2>/dev/null
 EOF
 
@@ -119,6 +135,7 @@ cat << 'EOF' > "$CUSTOM_HOOKS/pre-merge-commit"
 # ==========================================
 # 🚫 pre-merge-commit Hook - 禁止从dev分支merge
 # 在merge提交创建前检测并阻止从dev分支的merge操作
+# 增强版：更严格的检测逻辑，确保不遗漏任何dev分支merge
 # ==========================================
 
 # 检查是否正在进行merge操作
@@ -131,44 +148,127 @@ fi
 MERGE_HEAD=$(cat .git/MERGE_HEAD 2>/dev/null)
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
-# 尝试获取merge的源分支名
-MERGE_BRANCH=""
+echo ""
+echo "🔍 检测到 merge 操作，正在检查源分支..."
+echo "   当前分支: $CURRENT_BRANCH"
+echo "   MERGE_HEAD: $MERGE_HEAD"
 
-# 方法1: 从MERGE_MSG获取分支名
+# 尝试获取merge的源分支名 - 使用多种方法确保不遗漏
+MERGE_BRANCH=""
+DETECTION_METHOD=""
+
+# 方法1: 从MERGE_MSG获取分支名（最可靠）
 if [ -f ".git/MERGE_MSG" ]; then
     MERGE_MSG=$(cat .git/MERGE_MSG 2>/dev/null)
+    echo "   MERGE_MSG: $MERGE_MSG"
+    
     # 提取分支名，支持多种格式
     if echo "$MERGE_MSG" | grep -q "Merge branch"; then
         MERGE_BRANCH=$(echo "$MERGE_MSG" | sed -n "s/.*Merge branch '\([^']*\)'.*/\1/p" | head -1)
+        DETECTION_METHOD="MERGE_MSG (branch)"
     elif echo "$MERGE_MSG" | grep -q "Merge remote-tracking branch"; then
         MERGE_BRANCH=$(echo "$MERGE_MSG" | sed -n "s/.*Merge remote-tracking branch '\([^']*\)'.*/\1/p" | head -1)
+        # 移除 origin/ 前缀
+        MERGE_BRANCH=$(echo "$MERGE_BRANCH" | sed 's|^origin/||')
+        DETECTION_METHOD="MERGE_MSG (remote-tracking)"
     fi
 fi
 
 # 方法2: 从reflog获取分支名
 if [ -z "$MERGE_BRANCH" ]; then
-    MERGE_BRANCH=$(git reflog -1 --pretty=format:"%gs" 2>/dev/null | sed -n "s/.*merge \([^:]*\).*/\1/p")
+    REFLOG_MSG=$(git reflog -1 --pretty=format:"%gs" 2>/dev/null)
+    echo "   最近reflog: $REFLOG_MSG"
+    
+    if echo "$REFLOG_MSG" | grep -q "merge"; then
+        # 尝试多种reflog格式
+        MERGE_BRANCH=$(echo "$REFLOG_MSG" | sed -n "s/.*merge \([^[:space:]]*\).*/\1/p" | head -1)
+        if [ -z "$MERGE_BRANCH" ]; then
+            MERGE_BRANCH=$(echo "$REFLOG_MSG" | sed -n "s/.*merge branch '\([^']*\)'.*/\1/p" | head -1)
+        fi
+        if [ -z "$MERGE_BRANCH" ]; then
+            MERGE_BRANCH=$(echo "$REFLOG_MSG" | sed -n "s/.*merge remote-tracking branch '\([^']*\)'.*/\1/p" | head -1)
+            MERGE_BRANCH=$(echo "$MERGE_BRANCH" | sed 's|^origin/||')
+        fi
+        if [ -n "$MERGE_BRANCH" ]; then
+            DETECTION_METHOD="reflog"
+        fi
+    fi
 fi
 
-# 方法3: 检查MERGE_HEAD对应的分支
+# 方法3: 检查MERGE_HEAD对应的所有分支
 if [ -z "$MERGE_BRANCH" ] && [ -n "$MERGE_HEAD" ]; then
-    # 尝试找到包含这个commit的远程分支
-    POSSIBLE_BRANCHES=$(git branch -r --contains "$MERGE_HEAD" 2>/dev/null | grep -v HEAD | sed 's/^[[:space:]]*//' | sed 's/origin\///')
-    for branch in $POSSIBLE_BRANCHES; do
-        if echo "$branch" | grep -q "dev"; then
+    echo "   正在检查包含 $MERGE_HEAD 的分支..."
+    
+    # 检查本地分支
+    LOCAL_BRANCHES=$(git branch --contains "$MERGE_HEAD" 2>/dev/null | grep -v "^\*" | sed 's/^[[:space:]]*//' | grep -v "^$CURRENT_BRANCH$")
+    echo "   本地分支: $LOCAL_BRANCHES"
+    
+    # 检查远程分支
+    REMOTE_BRANCHES=$(git branch -r --contains "$MERGE_HEAD" 2>/dev/null | grep -v HEAD | sed 's/^[[:space:]]*//' | sed 's/origin\///')
+    echo "   远程分支: $REMOTE_BRANCHES"
+    
+    # 优先检查是否有dev分支
+    ALL_BRANCHES="$LOCAL_BRANCHES $REMOTE_BRANCHES"
+    for branch in $ALL_BRANCHES; do
+        if [ "$branch" = "dev" ] || [ "$branch" = "origin/dev" ]; then
             MERGE_BRANCH="$branch"
+            DETECTION_METHOD="branch contains"
             break
+        fi
+    done
+    
+    # 如果没有找到dev分支，取第一个非当前分支的分支
+    if [ -z "$MERGE_BRANCH" ]; then
+        for branch in $ALL_BRANCHES; do
+            if [ "$branch" != "$CURRENT_BRANCH" ]; then
+                MERGE_BRANCH="$branch"
+                DETECTION_METHOD="branch contains (first)"
+                break
+            fi
+        done
+    fi
+fi
+
+# 方法4: 检查最近几次的命令历史（如果其他方法都失败）
+if [ -z "$MERGE_BRANCH" ]; then
+    echo "   🔍 尝试从最近的Git操作历史中检测..."
+    
+    # 检查最近几个reflog条目
+    for i in 1 2 3 4 5; do
+        echo "   📋 检查reflog条目 $i..."
+        REFLOG_ENTRY=$(git reflog -$i --pretty=format:"%gs" 2>/dev/null | tail -1)
+        echo "      内容: $REFLOG_ENTRY"
+        
+        if echo "$REFLOG_ENTRY" | grep -q "checkout.*\bdev\b\|merge.*\bdev\b\|checkout.*origin/dev\|merge.*origin/dev"; then
+            echo "      ✓ 发现dev分支操作"
+            if echo "$REFLOG_ENTRY" | grep -q "checkout"; then
+                POSSIBLE_BRANCH=$(echo "$REFLOG_ENTRY" | sed -n 's/.*checkout: moving from .* to \(.*\)/\1/p')
+            else
+                POSSIBLE_BRANCH=$(echo "$REFLOG_ENTRY" | sed -n 's/.*merge \([^[:space:]]*\).*/\1/p')
+            fi
+            
+            if [ "$POSSIBLE_BRANCH" = "dev" ] || [ "$POSSIBLE_BRANCH" = "origin/dev" ]; then
+                MERGE_BRANCH="$POSSIBLE_BRANCH"
+                DETECTION_METHOD="reflog history"
+                echo "      ✅ 确认检测到dev分支: $POSSIBLE_BRANCH"
+                break
+            fi
+        else
+            echo "      - 未发现dev相关操作"
         fi
     done
 fi
 
-# 检查是否是从dev分支的merge
-if [ -n "$MERGE_BRANCH" ] && echo "$MERGE_BRANCH" | grep -q "dev"; then
-    echo ""
+echo "   检测结果: ${MERGE_BRANCH:-'未知'} (方法: ${DETECTION_METHOD:-'无'})"
+echo ""
+
+# 严格检查：如果检测到名为"dev"的分支，立即阻止
+if [ -n "$MERGE_BRANCH" ] && ([ "$MERGE_BRANCH" = "dev" ] || [ "$MERGE_BRANCH" = "origin/dev" ]); then
     echo "🚫 错误：禁止从 dev 分支进行 merge 操作！"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "⚠️  检测到正在从 '$MERGE_BRANCH' 分支 merge 到 '$CURRENT_BRANCH'"
     echo "⚠️  dev 分支是开发分支，禁止将其代码 merge 到其他分支"
+    echo "🔍 检测方法: $DETECTION_METHOD"
     echo ""
     echo "💡 正确的工作流程："
     echo "   1. 取消当前merge: git merge --abort"
@@ -176,6 +276,10 @@ if [ -n "$MERGE_BRANCH" ] && echo "$MERGE_BRANCH" | grep -q "dev"; then
     echo "   3. 在功能分支上开发并提交"
     echo "   4. 推送功能分支: git push origin feature/xxx"
     echo "   5. 创建 PR: feature/xxx → $CURRENT_BRANCH"
+    echo ""
+    echo "💡 如需强制绕过此限制："
+    echo "   git merge --no-verify dev"
+    echo "   ⚠️  注意：这将绕过dev分支保护，强烈不推荐！"
     echo ""
     echo "🔄 立即取消merge："
     echo "   git merge --abort"
@@ -185,21 +289,33 @@ if [ -n "$MERGE_BRANCH" ] && echo "$MERGE_BRANCH" | grep -q "dev"; then
     exit 1
 fi
 
-# 如果无法确定merge源分支，给出警告但允许通过
+# 如果无法确定merge源分支，采用更严格的策略
 if [ -z "$MERGE_BRANCH" ]; then
-    echo ""
     echo "⚠️  警告：无法确定 merge 源分支"
-    echo "💡 如果你正在从 dev 分支 merge，请手动取消："
-    echo "   git merge --abort"
     echo ""
+    echo "🔍 为了安全起见，请确认以下信息："
+    echo "   • 你是否正在从 dev 分支进行 merge？"
+    echo "   • 如果是，请立即取消: git merge --abort"
+    echo "   • 如果不是，可以继续 merge 操作"
+    echo ""
+    echo "💡 如果你确定不是从 dev 分支 merge，可以继续"
+    echo "💡 如果不确定，建议取消并使用正确的工作流程"
+    echo ""
+    
+    # 可选：在这里也可以选择更严格的策略，直接阻止所有无法确定源分支的merge
+    # 如果要启用严格模式，取消下面几行的注释：
+    # echo "🚫 为了安全起见，阻止所有无法确定源分支的 merge 操作"
+    # echo "❌ 请使用明确的分支名进行 merge，或通过 PR 进行合并"
+    # exit 1
 fi
 
+echo "✅ merge 检查通过，允许继续"
 exit 0
 EOF
 
 chmod +x "$CUSTOM_HOOKS/pre-merge-commit"
 
-echo "🚫 已创建 pre-merge-commit 钩子（阻止从dev分支merge）"
+echo "🚫 已创建增强版 pre-merge-commit 钩子（严格阻止从dev分支merge）"
 echo ""
 
 # ==========================================
@@ -225,41 +341,6 @@ detect_os() {
         MINGW*|MSYS*|CYGWIN*) echo "windows" ;;
         *)          echo "unknown" ;;
     esac
-}
-
-# 检查并修复 Windows Git 凭据管理器问题
-check_windows_git_credentials() {
-    if [ "$OS_TYPE" = "windows" ]; then
-        # 检查是否配置了已弃用的 credential-manager-core
-        local credential_helper=$(git config --global credential.helper 2>/dev/null)
-        if [ "$credential_helper" = "manager-core" ]; then
-            echo ""
-            echo "⚠️  检测到 Windows Git 凭据管理器配置问题"
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            echo "🔧 正在修复 credential-manager-core 配置..."
-            
-            # 尝试修复配置
-            if git config --global credential.helper manager 2>/dev/null; then
-                echo "✅ 已将 credential.helper 从 'manager-core' 更新为 'manager'"
-            else
-                echo "⚠️  无法自动修复，请手动执行以下命令："
-                echo "   git config --global credential.helper manager"
-            fi
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            echo ""
-        fi
-        
-        # 检查 Git Credential Manager 是否可用
-        if ! command -v git-credential-manager >/dev/null 2>&1; then
-            echo ""
-            echo "💡 Windows Git 凭据管理器提示："
-            echo "   如果遇到 'credential-manager-core' 错误，请："
-            echo "   1. 更新到最新版本的 Git for Windows"
-            echo "   2. 或执行: git config --global credential.helper manager"
-            echo "   3. 或安装最新的 Git Credential Manager"
-            echo ""
-        fi
-    fi
 }
 
 OS_TYPE=$(detect_os)
@@ -297,81 +378,164 @@ show_install_instructions() {
 
 # 生成预合并分支名（支持squash merge分支信息获取）
 generate_branch_name() {
+    echo "🔄 开始生成分支名..."
     local timestamp=$(date +%Y%m%d_%H%M%S)
     local user_name=$(git config user.name 2>/dev/null | tr '[:upper:]' '[:lower:]' | tr -d ' ' | cut -c1-8)
     
     # 如果无法获取用户名，使用系统用户名
     if [ -z "$user_name" ]; then
         user_name=$(whoami | cut -c1-8)
+        echo "   📋 使用系统用户名: $user_name"
+    else
+        echo "   📋 使用Git用户名: $user_name"
     fi
+    echo "   📅 时间戳: $timestamp"
     
     # 方法1: 尝试从reflog获取最近merge的分支信息（适用于squash merge）
+    echo ""
+    echo "🔍 方法1: 从reflog获取最近merge的分支信息"
     local source_branch=""
     for i in 1 2 3 4 5; do
+        echo "   📋 检查reflog条目 $i..."
         local reflog_msg=$(git reflog -$i --pretty=format:"%gs" 2>/dev/null | tail -1)
+        echo "      内容: $reflog_msg"
+        
         if echo "$reflog_msg" | grep -q "merge"; then
+            echo "      ✓ 发现merge操作"
             # 尝试提取分支名，支持多种格式
             if echo "$reflog_msg" | grep -q "merge branch"; then
                 source_branch=$(echo "$reflog_msg" | sed -n "s/.*merge branch '\([^']*\)'.*/\1/p" | head -1)
+                echo "      📝 提取方式: merge branch 格式"
             elif echo "$reflog_msg" | grep -q "merge remote-tracking branch"; then
                 source_branch=$(echo "$reflog_msg" | sed -n "s/.*merge remote-tracking branch '\([^']*\)'.*/\1/p" | head -1)
                 # 移除 origin/ 前缀
                 source_branch=$(echo "$source_branch" | sed 's|^origin/||')
+                echo "      📝 提取方式: remote-tracking branch 格式"
             elif echo "$reflog_msg" | grep -q "merge"; then
                 # 尝试从更通用的格式提取
                 source_branch=$(echo "$reflog_msg" | sed -n 's/.*merge \([^[:space:]]*\).*/\1/p' | head -1)
                 source_branch=$(echo "$source_branch" | sed 's|^origin/||')
+                echo "      📝 提取方式: 通用merge格式"
             fi
+            
+            echo "      🎯 提取到的分支名: ${source_branch:-'无'}"
             
             # 如果找到了有效的分支名，跳出循环
             if [ -n "$source_branch" ] && [ "$source_branch" != "main" ] && [ "$source_branch" != "master" ]; then
+                echo "      ✅ 找到有效的源分支: $source_branch"
                 break
+            else
+                echo "      ❌ 分支名无效或为主分支，继续查找..."
+                source_branch=""
             fi
+        else
+            echo "      - 未发现merge操作"
         fi
     done
     
+    if [ -n "$source_branch" ]; then
+        echo "   ✅ 方法1成功: $source_branch"
+    else
+        echo "   ❌ 方法1失败: 未找到有效的源分支"
+    fi
+    
     # 方法2: 如果reflog没有找到，尝试从传统的merged branches获取
+    echo ""
+    echo "🔍 方法2: 从merged branches获取分支信息"
     local merged_branches=""
     if [ -z "$source_branch" ]; then
-        merged_branches=$(git branch --merged | grep -iv "premerge" | grep -iv "main\|master" | \
+        echo "   📋 正在获取已合并的分支列表..."
+        local raw_merged_branches=$(git branch --merged 2>/dev/null)
+        echo "   📝 原始merged branches:"
+        echo "$raw_merged_branches" | sed 's/^/      /'
+        
+        merged_branches=$(echo "$raw_merged_branches" | grep -iv "premerge" | grep -iv "main\|master" | \
             sed 's/^[* ]*//' | \
             tr '\n' '-' | \
             sed 's/-$//' | \
             tr '/' '-' | \
             cut -c1-30)
+        
+        if [ -n "$merged_branches" ]; then
+            echo "   ✅ 方法2成功: $merged_branches"
+        else
+            echo "   ❌ 方法2失败: 未找到有效的merged branches"
+        fi
+    else
+        echo "   ⏭️  跳过方法2: 方法1已找到源分支"
     fi
     
     # 方法3: 尝试从最近的commit message获取分支信息
+    echo ""
+    echo "🔍 方法3: 从最近的commit message获取分支信息"
     local commit_branch=""
     if [ -z "$source_branch" ] && [ -z "$merged_branches" ]; then
+        echo "   📋 正在检查最近的commit message..."
         local recent_commit_msg=$(git log -1 --pretty=format:"%s" 2>/dev/null)
+        echo "   📝 最近的commit: $recent_commit_msg"
+        
         if echo "$recent_commit_msg" | grep -qi "merge\|squash"; then
+            echo "   ✓ 发现merge/squash相关的commit"
             # 尝试从commit message提取分支名
             commit_branch=$(echo "$recent_commit_msg" | sed -n 's/.*[Mm]erge.*\([a-zA-Z0-9_-]*\/[a-zA-Z0-9_-]*\).*/\1/p' | head -1)
-            if [ -z "$commit_branch" ]; then
+            if [ -n "$commit_branch" ]; then
+                echo "   📝 提取方式: Merge格式 (feature/xxx)"
+            else
                 commit_branch=$(echo "$recent_commit_msg" | sed -n 's/.*[Ff]rom \([a-zA-Z0-9_-]*\).*/\1/p' | head -1)
+                if [ -n "$commit_branch" ]; then
+                    echo "   📝 提取方式: From格式"
+                fi
             fi
+            
+            if [ -n "$commit_branch" ]; then
+                echo "   🎯 提取到的分支名: $commit_branch"
+                echo "   ✅ 方法3成功: $commit_branch"
+            else
+                echo "   ❌ 无法从commit message提取分支名"
+                echo "   ❌ 方法3失败: 未找到有效的分支信息"
+            fi
+        else
+            echo "   - 未发现merge/squash相关的commit"
+            echo "   ❌ 方法3失败: commit message不包含merge信息"
         fi
+    else
+        echo "   ⏭️  跳过方法3: 前面的方法已找到分支信息"
     fi
     
     # 决定使用哪个分支信息
+    echo ""
+    echo "🎯 决定最终使用的分支信息..."
     local branch_info=""
     if [ -n "$source_branch" ]; then
         branch_info="$source_branch"
+        echo "   ✅ 使用方法1的结果: $source_branch"
     elif [ -n "$merged_branches" ]; then
         branch_info="$merged_branches"
+        echo "   ✅ 使用方法2的结果: $merged_branches"
     elif [ -n "$commit_branch" ]; then
         branch_info="$commit_branch"
+        echo "   ✅ 使用方法3的结果: $commit_branch"
+    else
+        echo "   ❌ 所有方法都未找到分支信息，将使用通用格式"
     fi
     
     # 清理分支名，确保符合 Git 分支命名规范
+    local final_branch_name=""
     if [ -n "$branch_info" ]; then
-        branch_info=$(echo "$branch_info" | sed 's/[^a-zA-Z0-9_/-]//g' | tr '/' '-' | cut -c1-25)
-        echo "feat/premerge-${branch_info}-${user_name}-${timestamp}"
+        echo "   🔧 正在清理分支名..."
+        echo "      原始分支信息: $branch_info"
+        local cleaned_branch_info=$(echo "$branch_info" | sed 's/[^a-zA-Z0-9_/-]//g' | tr '/' '-' | cut -c1-25)
+        echo "      清理后分支信息: $cleaned_branch_info"
+        final_branch_name="feat/premerge-${cleaned_branch_info}-${user_name}-${timestamp}"
+        echo "   🎯 生成的分支名: $final_branch_name"
     else
         # 如果都没有找到，使用通用格式
-        echo "feat/premerge-${user_name}-${timestamp}"
+        final_branch_name="feat/premerge-${user_name}-${timestamp}"
+        echo "   🎯 使用通用格式分支名: $final_branch_name"
     fi
+    
+    echo "✅ 分支名生成完成: $final_branch_name"
+    echo "$final_branch_name"
 }
 
 # 检查是否是merge操作（包括fast-forward merge和squash merge）
@@ -462,7 +626,7 @@ is_merge_from_dev() {
         if echo "$reflog_msg" | grep -q "merge"; then
             recent_merge_msg="$reflog_msg"
             # 检查merge信息中是否包含dev分支
-            if echo "$recent_merge_msg" | grep -q "merge.*dev\|merge.*origin/dev"; then
+            if echo "$recent_merge_msg" | grep -q "merge.*\bdev\b\|merge.*origin/dev"; then
                 return 0
             fi
             break
@@ -480,7 +644,7 @@ is_merge_from_dev() {
     if [ -n "$merge_commits" ]; then
         for commit in $merge_commits; do
             local commit_msg=$(git log -1 --pretty=format:"%s" "$commit" 2>/dev/null)
-            if echo "$commit_msg" | grep -q "dev\|origin/dev"; then
+            if echo "$commit_msg" | grep -q "\bdev\b\|origin/dev"; then
                 return 0
             fi
         done
@@ -496,7 +660,7 @@ is_merge_from_dev() {
     fi
     
     if [ -n "$recent_commits" ]; then
-        if echo "$recent_commits" | grep -qi "dev\|origin/dev\|from.*dev\|merge.*dev"; then
+        if echo "$recent_commits" | grep -qi "\bdev\b\|origin/dev\|from.*\bdev\b\|merge.*\bdev\b"; then
             return 0
         fi
     fi
@@ -531,7 +695,7 @@ is_merge_from_dev() {
                     all_commit_msgs=$(git log -5 --oneline 2>/dev/null)
                 fi
                 
-                if echo "$all_commit_msgs" | grep -qi "dev"; then
+                if echo "$all_commit_msgs" | grep -qi "\bdev\b"; then
                     return 0
                 fi
             fi
@@ -544,19 +708,25 @@ is_merge_from_dev() {
 
 # ========== 主逻辑 ==========
 main() {
-    # Windows 系统检查并修复凭据管理器问题
-    check_windows_git_credentials
-    
     # 检查当前是否在受保护分支
+    echo "🔍 正在检查当前分支类型..."
+    echo "   当前分支: $CURRENT_BRANCH"
+    echo "   受保护分支列表: ${PROTECTED_BRANCHES[*]}"
+    
     is_protected=false
     protected_branch=""
     for branch in "${PROTECTED_BRANCHES[@]}"; do
         if [ "$CURRENT_BRANCH" = "$branch" ]; then
             is_protected=true
             protected_branch="$branch"
+            echo "   ✅ 检测到受保护分支: $branch"
             break
         fi
     done
+    
+    if [ "$is_protected" = false ]; then
+        echo "   ✅ 当前为功能分支，将进行功能分支检查流程"
+    fi
     
     # 如果在受保护分支（main/master），执行特殊逻辑
     if [ "$is_protected" = true ]; then
@@ -567,9 +737,11 @@ main() {
         echo ""
         
         # 检查是否有未推送的提交（相对于远程分支）
+        echo "🔍 正在检查本地提交状态..."
         if ! git rev-parse @{u} > /dev/null 2>&1; then
             # 没有上游分支
             echo "⚠️  当前分支没有远程跟踪分支"
+            echo "📋 正在检查本地提交历史..."
             
             # 检查是否有提交
             if [ $(git rev-list --count HEAD) -eq 0 ]; then
@@ -579,9 +751,10 @@ main() {
             
             # 有提交但没有上游，说明本地有新提交
             UNPUSHED_COMMITS=$(git rev-list --count HEAD)
-            echo "📊 检测到 $UNPUSHED_COMMITS 个本地提交"
+            echo "📊 检测到 $UNPUSHED_COMMITS 个本地提交（新分支）"
         else
             # 有上游分支，检查本地领先的提交数
+            echo "📋 正在比较本地与远程分支..."
             UNPUSHED_COMMITS=$(git rev-list @{u}..HEAD --count 2>/dev/null || echo "0")
             
             if [ "$UNPUSHED_COMMITS" -eq 0 ]; then
@@ -592,22 +765,29 @@ main() {
             echo "📊 检测到 $UNPUSHED_COMMITS 个未推送的提交"
         fi
         
+        echo "🔍 正在分析提交类型..."
+        
         # 检查是否是merge操作（包括fast-forward merge和squash merge）
         if is_merge_operation "$UNPUSHED_COMMITS"; then
             echo "🔀 检测到merge操作，这可能是从其他分支合并的更改（包括 squash merge）"
             
-            # 检查是否是从dev分支的merge
+            # 检查是否是从dev分支的merge（双重保险，正常情况下pre-merge-commit已经阻止了）
             if is_merge_from_dev; then
                 echo ""
                 echo "🚫 错误：检测到从 dev 分支的 merge 操作！"
                 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                 echo "⚠️  dev 分支是开发分支，禁止将其代码 merge 到其他分支"
+                echo "⚠️  注意：正常情况下 pre-merge-commit 钩子应该已经阻止了这个操作"
                 echo ""
                 echo "💡 正确的工作流程："
                 echo "   1. 从 $CURRENT_BRANCH 创建功能分支: git checkout -b feature/xxx"
                 echo "   2. 在功能分支上开发并提交"
                 echo "   3. 推送功能分支: git push origin feature/xxx"
                 echo "   4. 创建 PR: feature/xxx → $CURRENT_BRANCH"
+                echo ""
+                echo "💡 如需强制绕过此限制："
+                echo "   git push --no-verify"
+                echo "   ⚠️  注意：这将绕过所有保护机制，强烈不推荐！"
                 echo ""
                 echo "🔄 如需撤销此次 merge："
                 echo "   git reset --hard HEAD~1"
@@ -635,34 +815,45 @@ main() {
         echo ""
         
         # 生成临时分支名
-        NEW_BRANCH=$(generate_branch_name)
-        echo "🌿 生成临时分支: $NEW_BRANCH"
+        echo "🔄 正在生成临时分支名..."
+        NEW_BRANCH=$(generate_branch_name | tail -1)
+        echo "🌿 最终临时分支: $NEW_BRANCH"
         echo ""
         
         # 保存当前 HEAD 位置
+        echo "📋 正在保存当前状态..."
         CURRENT_HEAD=$(git rev-parse HEAD)
+        echo "   当前HEAD: $CURRENT_HEAD"
         
         # 创建新分支（基于当前 HEAD）
+        echo "🔧 正在创建新分支..."
         if ! git checkout -b "$NEW_BRANCH" 2>/dev/null; then
             echo "❌ 创建分支失败"
             exit 1
         fi
         
         echo "✅ 已切换到临时分支: $NEW_BRANCH"
-        echo "🚀 正在推送到远程..."
+        echo ""
+        echo "🚀 正在推送到远程仓库..."
+        echo "   目标: origin/$NEW_BRANCH"
+        echo "   操作: git push -u origin $NEW_BRANCH"
         echo ""
         
         # 推送到远程（设置上游）
         if ! git push -u origin "$NEW_BRANCH" 2>&1; then
             echo ""
-            echo "❌ 推送失败，正在恢复到 $protected_branch..."
+            echo "❌ 推送失败，正在恢复环境..."
+            echo "🔄 切换回 $protected_branch 分支..."
             git checkout "$protected_branch" 2>/dev/null
+            echo "🗑️  删除临时分支 $NEW_BRANCH..."
             git branch -D "$NEW_BRANCH" 2>/dev/null
+            echo "✅ 环境已恢复"
             exit 1
         fi
         
         echo ""
         echo "✅ 推送成功！"
+        echo "   远程分支: origin/$NEW_BRANCH 已创建"
         echo ""
         
         # 切回原分支（保持原状态）
@@ -672,44 +863,70 @@ main() {
         echo ""
         
         # 检查 gh CLI 并创建 PR
+        echo "🔍 正在检查 GitHub CLI 工具..."
         if ! check_gh_cli; then
+            echo "❌ GitHub CLI 未安装"
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             echo "📋 下一步操作："
             echo "   1. 手动创建 PR: $NEW_BRANCH → $protected_branch"
             echo "   2. 或安装 gh CLI 后执行: gh pr create --web"
+            echo ""
+            echo "💡 如需绕过 PR 流程直接推送到 $protected_branch："
+            echo "   git checkout $protected_branch"
+            echo "   git push --no-verify"
+            echo "   ⚠️  注意：这将绕过所有保护机制，请谨慎使用！"
             show_install_instructions
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             exit 1
         fi
         
+        echo "✅ GitHub CLI 已安装"
+        echo "🔐 正在检查 GitHub 认证状态..."
         if ! check_gh_auth; then
+            echo "❌ GitHub CLI 未登录"
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             echo "⚠️  GitHub CLI 未登录"
             echo ""
             echo "请先执行: gh auth login"
             echo ""
             echo "或手动创建 PR: $NEW_BRANCH → $protected_branch"
+            echo ""
+            echo "💡 如需绕过 PR 流程直接推送到 $protected_branch："
+            echo "   git checkout $protected_branch"
+            echo "   git push --no-verify"
+            echo "   ⚠️  注意：这将绕过所有保护机制，请谨慎使用！"
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             exit 1
         fi
         
+        echo "✅ GitHub 认证状态正常"
+        
         # 创建 PR
+        echo ""
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo "🚀 正在打开浏览器创建 PR..."
+        echo "🚀 正在创建 Pull Request..."
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo "🌿 从: $NEW_BRANCH"
-        echo "🎯 到: $protected_branch"
+        echo "🌿 源分支: $NEW_BRANCH"
+        echo "🎯 目标分支: $protected_branch"
         echo ""
         
         # 切换到新分支来创建 PR
+        echo "🔄 切换到源分支进行 PR 创建..."
         git checkout "$NEW_BRANCH" 2>/dev/null
+        echo "✅ 已切换到 $NEW_BRANCH"
+        
+        echo ""
+        echo "🌐 正在打开浏览器创建 PR..."
+        echo "   命令: gh pr create --web --base $protected_branch"
         
         # 使用 --web 打开浏览器，base 指定目标分支
         if gh pr create --web --base "$protected_branch" 2>/dev/null; then
             echo "✅ 已在浏览器中打开 PR 创建页面"
+            echo "   请在浏览器中完成 PR 的标题、描述等信息填写"
         else
             echo "⚠️  无法自动打开 PR 页面"
             echo "💡 请手动执行: gh pr create --web --base $protected_branch"
+            echo "💡 或访问 GitHub 网页手动创建 PR"
         fi
         
         echo ""
@@ -722,6 +939,11 @@ main() {
         echo "   • 请在浏览器中完成 PR 创建"
         echo "   • PR 合并后可删除临时分支"
         echo "   • 如需切回主分支: git checkout $protected_branch"
+        echo ""
+        echo "💡 如需绕过 PR 流程直接推送到 $protected_branch："
+        echo "   git checkout $protected_branch"
+        echo "   git push --no-verify"
+        echo "   ⚠️  注意：这将绕过所有保护机制，请谨慎使用！"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         
         # 阻止原始 push 操作
@@ -731,29 +953,40 @@ main() {
     # 非受保护分支：检查是否包含dev分支的merge
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "🌿 当前分支: $CURRENT_BRANCH"
+    echo "🌿 当前分支: $CURRENT_BRANCH (功能分支)"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "🔍 正在检查功能分支的推送内容..."
     
     # 检查是否有未推送的提交
     local unpushed_commits=0
+    echo "📋 正在检查未推送的提交..."
     if git rev-parse @{u} > /dev/null 2>&1; then
+        echo "   有远程跟踪分支，正在比较..."
         unpushed_commits=$(git rev-list @{u}..HEAD --count 2>/dev/null || echo "0")
     else
+        echo "   没有远程跟踪分支，检查本地提交..."
         unpushed_commits=$(git rev-list --count HEAD 2>/dev/null || echo "0")
     fi
     
-    # 如果有未推送的提交，检查是否包含dev分支的merge
+    echo "📊 未推送提交数: $unpushed_commits"
+    
+    # 如果有未推送的提交，检查是否包含dev分支的merge（双重保险）
     if [ "$unpushed_commits" -gt 0 ] && is_merge_operation "$unpushed_commits" && is_merge_from_dev; then
         echo ""
         echo "🚫 错误：检测到从 dev 分支的 merge 操作！"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo "⚠️  dev 分支是开发分支，禁止将其代码 merge 到任何其他分支"
+        echo "⚠️  注意：正常情况下 pre-merge-commit 钩子应该已经阻止了这个操作"
         echo ""
         echo "💡 正确的工作流程："
         echo "   1. 从目标分支（如 main）创建功能分支: git checkout main && git checkout -b feature/xxx"
         echo "   2. 在功能分支上开发并提交"
         echo "   3. 推送功能分支: git push origin feature/xxx"
         echo "   4. 创建 PR: feature/xxx → main"
+        echo ""
+        echo "💡 如需强制绕过此限制："
+        echo "   git push --no-verify"
+        echo "   ⚠️  注意：这将绕过所有保护机制，强烈不推荐！"
         echo ""
         echo "🔄 如需撤销此次 merge："
         echo "   git reset --hard HEAD~1"
@@ -763,11 +996,22 @@ main() {
         exit 1
     fi
     
-    echo "✅ 允许推送到功能分支"
     echo ""
-    echo "💡 提示：推送完成后，你可以手动创建 PR："
-    echo "   gh pr create --web"
+    echo "✅ 功能分支检查通过！"
+    echo "🚀 允许推送到功能分支: $CURRENT_BRANCH"
     echo ""
+    echo "💡 推送完成后的建议操作："
+    echo "   1. 推送完成后，创建 PR 合并到主分支"
+    echo "   2. 使用命令: gh pr create --web"
+    echo "   3. 或访问 GitHub 网页手动创建 PR"
+    echo ""
+    echo "💡 如需绕过 PR 流程直接推送到主分支："
+    echo "   git checkout main"
+    echo "   git merge $CURRENT_BRANCH"
+    echo "   git push --no-verify"
+    echo "   ⚠️  注意：这将绕过所有保护机制，请谨慎使用！"
+    echo ""
+    echo "📋 推送即将开始..."
     exit 0
 }
 
@@ -807,7 +1051,7 @@ echo "   ✓ 自定义 hooks 目录管理"
 echo "   ✓ 切换分支/合并后自动恢复配置"
 echo "   ✓ ✅ 允许 merge 到 main 分支（PR 合并，包括 squash merge）"
 echo "   ✓ 🚫 禁止在 main 分支直接 push"
-echo "   ✓ 🚫 禁止从 dev 分支 merge 到任何其他分支（包括 squash merge）"
+echo "   ✓ 🚫 严格禁止从名为 'dev' 的分支 merge 到任何其他分支（在 merge 前阻止）"
 echo "   ✓ 🆕 自动创建临时分支 feat/premerge-sourcebranch-user-timestamp"
 echo "   ✓ 🆕 自动推送并打开 PR 页面"
 echo "   ✓ 🆕 main 分支保持不变"
@@ -827,11 +1071,11 @@ echo "      • git checkout main && git commit && git push"
 echo "        → 直接修改：提示使用 --no-verify 强制推送"
 echo "        → merge修改：自动转移到临时分支并创建 PR"
 echo "      • git checkout main && git merge dev"
-echo "        → 禁止从 dev 分支 merge 到任何其他分支"
+echo "        → ❌ 在 merge 阶段就被 pre-merge-commit 钩子阻止"
 echo "      • git checkout main && git merge --squash dev"
-echo "        → 禁止从 dev 分支 squash merge 到任何其他分支"
+echo "        → ❌ 在 merge 阶段就被 pre-merge-commit 钩子阻止"
 echo "      • git checkout feature-branch && git merge dev"
-echo "        → 禁止从 dev 分支 merge 到任何其他分支"
+echo "        → ❌ 在 merge 阶段就被 pre-merge-commit 钩子阻止"
 echo ""
 echo "   🔄 自动流程（仅限merge提交，包括squash merge）："
 echo "      1. 在 main 上执行 git push（包含merge提交或squash merge提交）"
@@ -845,8 +1089,10 @@ echo "💡 注意事项："
 echo "   • PR 功能需要 GitHub CLI: https://github.com/cli/cli"
 echo "   • 首次使用需执行: gh auth login"
 echo "   • 如需绕过（不推荐）: git push --no-verify"
-echo "   • dev 分支仅用于开发，禁止 merge 到其他分支"
+echo "   • ⚠️  名为 'dev' 的分支严格禁止 merge 到其他分支（在 merge 前就会被阻止）"
 echo "   • 从 dev 分支创建功能分支时，应从目标分支（如 main）创建"
+echo "   • 新增：增强版 pre-merge-commit 钩子，多重检测确保不遗漏"
+echo "   • 新增：详细的执行日志，清晰显示每个步骤的进度和状态"
 echo ""
 echo "🌿 智能分支命名："
 echo "   • 普通 merge: feat/premerge-sourcebranch-user-timestamp"
